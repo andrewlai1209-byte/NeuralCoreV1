@@ -1,0 +1,586 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import express from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI } from '@google/genai';
+import dotenv from 'dotenv';
+import { Chess } from 'chess.js';
+import { ChessEngine } from './src/engine';
+import { EngineConfig, TrainingGame, EloHistoryPoint, LossMetricPoint } from './src/types';
+
+// Load environment variables
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+
+app.use(express.json());
+
+// Initialize Gemini Client
+let ai: GoogleGenAI | null = null;
+if (process.env.GEMINI_API_KEY) {
+  ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
+}
+
+// -----------------------------------------------------------------------------
+// CLOUD TRAINING STATE & SELF-PLAY BACKGROUND SERVICE
+// -----------------------------------------------------------------------------
+
+let totalGamesPlayed = 48291;
+let winCount = 18942;
+let drawCount = 10429;
+let lossCount = 18920; // from perspective of Neural/Hybrid engines
+
+let currentEloTraditional = 1845;
+let currentEloNeural = 2120;
+let currentEloHybrid = 2315;
+let currentEloNeuralCore = 2480;
+let currentEloPolicy = 1980;
+
+let currentPolicyLoss = 0.124;
+let currentValueLoss = 0.086;
+
+// -----------------------------------------------------------------------------
+// ENGINE DETAILS COMPARISON & STATE REGISTRY
+// -----------------------------------------------------------------------------
+const enginesList = [
+  { id: 'neuralcore', name: 'NeuralCore CH (v1.0)', shortName: 'NeuralCore CH', baseElo: 2480, maxDepth: 8, wins: 28402, draws: 11451, losses: 14238, active: true },
+  { id: 'hybrid', name: 'Aetheris Hybrid (v3.0)', shortName: 'Aetheris Hybrid', baseElo: 2315, maxDepth: 6, wins: 23419, draws: 12102, losses: 18274, active: true },
+  { id: 'neural', name: 'Aetheris Neural (v2.8)', shortName: 'Aetheris Neural', baseElo: 2120, maxDepth: 5, wins: 19541, draws: 10429, losses: 21950, active: true },
+  { id: 'traditional', name: 'Traditional Minimax (Depth 4)', shortName: 'Traditional Minimax', baseElo: 1845, maxDepth: 4, wins: 14205, draws: 9401, losses: 28942, active: true },
+  { id: 'policy', name: 'Reinforcement Policy (v2.0)', shortName: 'Reinforcement Policy', baseElo: 1980, maxDepth: 4, wins: 16120, draws: 8192, losses: 24501, active: true }
+];
+
+// -----------------------------------------------------------------------------
+// CLOUD TRAINING LOG BUFFER
+// -----------------------------------------------------------------------------
+interface TrainingLog {
+  timestamp: string;
+  level: 'info' | 'warn' | 'success';
+  message: string;
+  engine?: string;
+}
+
+const trainingLogs: TrainingLog[] = [
+  { timestamp: new Date().toLocaleTimeString(), level: 'success', message: 'Aetheris Chess Sandbox Cloud Server initialized successfully.', engine: 'System' },
+  { timestamp: new Date().toLocaleTimeString(), level: 'info', message: 'Allocated 4x NVIDIA L4 cluster for reinforcement gradients.', engine: 'System' },
+  { timestamp: new Date().toLocaleTimeString(), level: 'info', message: 'Loaded NeuralCore policy parameters. Active parameters: 185M weights.', engine: 'NeuralCore CH (v1.0)' },
+  { timestamp: new Date().toLocaleTimeString(), level: 'info', message: 'Reading historical self-play database. Synced with local storage cache.', engine: 'System' },
+  { timestamp: new Date().toLocaleTimeString(), level: 'success', message: 'Reinforcement policy-gradient optimization service is online.', engine: 'System' }
+];
+
+function addTrainingLog(message: string, level: 'info' | 'warn' | 'success' = 'info', engine?: string) {
+  trainingLogs.push({
+    timestamp: new Date().toLocaleTimeString(),
+    level,
+    message,
+    engine
+  });
+  if (trainingLogs.length > 80) {
+    trainingLogs.shift();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// POSITION & OPENING LINES HEATMAP GENERATION
+// -----------------------------------------------------------------------------
+const heatmapFocus: Record<string, number> = {};
+const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+const ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
+
+function initHeatmap() {
+  for (const file of files) {
+    for (const rank of ranks) {
+      const square = file + rank;
+      const isCenter = ['d4', 'd5', 'e4', 'e5'].includes(square);
+      const isSemiCenter = ['c4', 'c5', 'f3', 'f6', 'c3', 'f4', 'e3', 'd3'].includes(square);
+      heatmapFocus[square] = isCenter ? 85 : isSemiCenter ? 55 : Math.floor(Math.random() * 25) + 10;
+    }
+  }
+}
+initHeatmap();
+
+// Historical lists
+const eloHistory: any[] = [];
+const lossHistory: LossMetricPoint[] = [];
+const winLossHistory: { epoch: number; wins: number; draws: number; losses: number }[] = [];
+
+// Populate some initial historical data to look rich and realistic
+for (let i = 0; i < 20; i++) {
+  const epoch = i + 1;
+  const games = 40000 + (i * 410);
+  eloHistory.push({
+    epoch,
+    gamesPlayed: games,
+    eloTraditional: 1800 + Math.floor(Math.sin(i / 2) * 15) + (i * 2),
+    eloNeural: 1950 + (i * 8) + Math.floor(Math.random() * 10),
+    eloHybrid: 2100 + (i * 11) + Math.floor(Math.random() * 15),
+    eloNeuralCore: 2250 + (i * 12.5) + Math.floor(Math.random() * 12),
+  });
+
+  lossHistory.push({
+    epoch,
+    policyLoss: 0.45 - (i * 0.016) + (Math.random() * 0.02),
+    valueLoss: 0.38 - (i * 0.015) + (Math.random() * 0.015),
+    accuracy: 45 + (i * 1.8) + (Math.random() * 1.5)
+  });
+
+  const win = Math.floor(30 + i * 1.2 + Math.sin(i) * 3);
+  const draw = Math.floor(20 + Math.cos(i) * 1.5);
+  const loss = 100 - win - draw;
+  winLossHistory.push({
+    epoch,
+    wins: win,
+    draws: draw,
+    losses: loss
+  });
+}
+
+const recentFinishedGames: TrainingGame[] = [];
+let liveGameChess = new Chess();
+let liveGameId = 'g_' + Math.random().toString(36).substring(2, 9);
+let liveWhiteEngine = 'Aetheris Neural (v2.8)';
+let liveBlackEngine = 'Aetheris Hybrid (v3.0)';
+let liveGameMoves: string[] = [];
+let liveGameEvals: number[] = [];
+let liveGameStartTime = new Date().toLocaleTimeString();
+
+// Helper to start a new server-side training self-play game
+function startNewSelfPlayGame() {
+  liveGameChess = new Chess();
+  liveGameId = 'g_' + Math.random().toString(36).substring(2, 9);
+  liveGameMoves = [];
+  liveGameEvals = [];
+  liveGameStartTime = new Date().toLocaleTimeString();
+
+  const activeEngines = enginesList.filter(e => e.active);
+  if (activeEngines.length >= 2) {
+    const idx1 = Math.floor(Math.random() * activeEngines.length);
+    let idx2 = Math.floor(Math.random() * activeEngines.length);
+    while (idx1 === idx2) {
+      idx2 = Math.floor(Math.random() * activeEngines.length);
+    }
+    liveWhiteEngine = activeEngines[idx1].name;
+    liveBlackEngine = activeEngines[idx2].name;
+    addTrainingLog(`New self-play matchmaking scheduled: White [${liveWhiteEngine}] vs Black [${liveBlackEngine}]`, 'success', 'System');
+  } else {
+    liveWhiteEngine = 'None';
+    liveBlackEngine = 'None';
+  }
+}
+
+// Start the first self-play game
+startNewSelfPlayGame();
+
+// Active server self-play evaluation engines
+const serverEngineWhite = new ChessEngine({ maxDepth: 2, personality: 'tactical', evalMode: 'neural' });
+const serverEngineBlack = new ChessEngine({ maxDepth: 2, personality: 'positional', evalMode: 'hybrid' });
+
+// Periodically make a move in our server-side chess training game (every 4 seconds)
+setInterval(() => {
+  const activeEngines = enginesList.filter(e => e.active);
+  if (activeEngines.length < 2) {
+    if (Math.random() < 0.25) {
+      addTrainingLog('Background simulation suspended. Active engines cluster count < 2.', 'warn', 'System');
+    }
+    return;
+  }
+
+  // If currently paired engines are no longer active, abort and pair new ones
+  const whiteActive = activeEngines.some(e => e.name === liveWhiteEngine);
+  const blackActive = activeEngines.some(e => e.name === liveBlackEngine);
+  if (!whiteActive || !blackActive) {
+    addTrainingLog('Active match terminated: One of the participant models was paused by the operator.', 'warn', 'System');
+    startNewSelfPlayGame();
+    return;
+  }
+
+  if (liveGameChess.isGameOver()) {
+    // Record game result
+    totalGamesPlayed++;
+    let result: '1-0' | '0-1' | '1/2-1/2' = '1/2-1/2';
+    if (liveGameChess.isCheckmate()) {
+      result = liveGameChess.turn() === 'w' ? '0-1' : '1-0';
+      if (result === '1-0') winCount++;
+      else lossCount++;
+    } else {
+      drawCount++;
+    }
+
+    const wEng = enginesList.find(e => e.name === liveWhiteEngine);
+    const bEng = enginesList.find(e => e.name === liveBlackEngine);
+
+    if (result === '1-0') {
+      if (wEng) { wEng.wins++; wEng.baseElo += Math.floor(Math.random() * 5) + 3; }
+      if (bEng) { bEng.losses++; bEng.baseElo -= Math.floor(Math.random() * 3) + 2; }
+      addTrainingLog(`Match concluded: ${liveWhiteEngine} wins against ${liveBlackEngine} (Checkmate)`, 'success', liveWhiteEngine);
+    } else if (result === '0-1') {
+      if (wEng) { wEng.losses++; wEng.baseElo -= Math.floor(Math.random() * 3) + 2; }
+      if (bEng) { bEng.wins++; bEng.baseElo += Math.floor(Math.random() * 5) + 3; }
+      addTrainingLog(`Match concluded: ${liveBlackEngine} wins against ${liveWhiteEngine} (Checkmate)`, 'success', liveBlackEngine);
+    } else {
+      if (wEng) { wEng.draws++; wEng.baseElo += 1; }
+      if (bEng) { bEng.draws++; bEng.baseElo += 1; }
+      addTrainingLog(`Match concluded: Draw between ${liveWhiteEngine} and ${liveBlackEngine}`, 'info', 'System');
+    }
+
+    // Update global variables for backward compatibility
+    const coreEng = enginesList.find(e => e.id === 'neuralcore');
+    const hybEng = enginesList.find(e => e.id === 'hybrid');
+    const neuEng = enginesList.find(e => e.id === 'neural');
+    const tradEng = enginesList.find(e => e.id === 'traditional');
+    const polEng = enginesList.find(e => e.id === 'policy');
+
+    if (coreEng) currentEloNeuralCore = coreEng.baseElo;
+    if (hybEng) currentEloHybrid = hybEng.baseElo;
+    if (neuEng) currentEloNeural = neuEng.baseElo;
+    if (tradEng) currentEloTraditional = tradEng.baseElo;
+    if (polEng) currentEloPolicy = polEng.baseElo;
+
+    // Decay loss function to simulate optimization
+    currentPolicyLoss = Math.max(0.04, currentPolicyLoss - 0.001 + (Math.random() * 0.0008));
+    currentValueLoss = Math.max(0.02, currentValueLoss - 0.0008 + (Math.random() * 0.0006));
+
+    const finishedGame: TrainingGame = {
+      id: liveGameId,
+      whiteEngine: liveWhiteEngine,
+      blackEngine: liveBlackEngine,
+      result,
+      movesCount: liveGameMoves.length,
+      currentFen: liveGameChess.fen(),
+      moveHistory: [...liveGameMoves],
+      evalHistory: [...liveGameEvals],
+      startTime: liveGameStartTime
+    };
+
+    recentFinishedGames.unshift(finishedGame);
+    if (recentFinishedGames.length > 20) {
+      recentFinishedGames.pop();
+    }
+
+    // Start a new match
+    startNewSelfPlayGame();
+  } else {
+    // Generate next best move from engine
+    const isWhiteTurn = liveGameChess.turn() === 'w';
+    const activeEngineName = isWhiteTurn ? liveWhiteEngine : liveBlackEngine;
+
+    // Map activeEngineName to a personality & evalMode
+    let maxDepth = 2;
+    let evalMode: 'traditional' | 'neural' | 'hybrid' = 'hybrid';
+    let personality: 'positional' | 'tactical' | 'gambiter' | 'defensive' = 'positional';
+
+    if (activeEngineName.includes('NeuralCore')) {
+      maxDepth = 3;
+      evalMode = 'neural';
+      personality = 'tactical';
+    } else if (activeEngineName.includes('Hybrid')) {
+      maxDepth = 2;
+      evalMode = 'hybrid';
+      personality = 'positional';
+    } else if (activeEngineName.includes('Neural')) {
+      maxDepth = 2;
+      evalMode = 'neural';
+      personality = 'tactical';
+    } else if (activeEngineName.includes('Minimax')) {
+      maxDepth = 2;
+      evalMode = 'traditional';
+      personality = 'defensive';
+    } else if (activeEngineName.includes('Policy')) {
+      maxDepth = 2;
+      evalMode = 'neural';
+      personality = 'gambiter';
+    }
+
+    const engineInstance = new ChessEngine({ maxDepth, personality, evalMode });
+    const trainingProgress = Math.min(0.98, 0.45 + (totalGamesPlayed / 100000));
+    
+    try {
+      const searchRes = engineInstance.search(liveGameChess.fen(), trainingProgress);
+      if (searchRes.bestMove) {
+        const sanMove = searchRes.bestMove.san;
+        liveGameMoves.push(sanMove);
+        liveGameEvals.push(searchRes.score);
+
+        // Decay all heatmap coordinates slightly, then spike target squares
+        for (const sq in heatmapFocus) {
+          heatmapFocus[sq] = Math.max(10, Math.round(heatmapFocus[sq] * 0.95));
+        }
+        if (searchRes.bestMove.from) {
+          heatmapFocus[searchRes.bestMove.from] = Math.min(100, (heatmapFocus[searchRes.bestMove.from] || 10) + 45);
+        }
+        if (searchRes.bestMove.to) {
+          heatmapFocus[searchRes.bestMove.to] = Math.min(100, (heatmapFocus[searchRes.bestMove.to] || 10) + 50);
+        }
+
+        liveGameChess.move(searchRes.bestMove);
+
+        // Periodically log searches
+        if (Math.random() < 0.65) {
+          const evalScoreStr = (searchRes.score / 100).toFixed(2);
+          addTrainingLog(`Engine calculated move: ${sanMove} | Eval: ${evalScoreStr > '0' ? '+' : ''}${evalScoreStr}cp | Depth: ${searchRes.depth} plys | Nodes: ${searchRes.nodes}`, 'info', activeEngineName);
+        }
+      } else {
+        // Fallback random move
+        const moves = liveGameChess.moves({ verbose: true });
+        if (moves.length > 0) {
+          const m = moves[Math.floor(Math.random() * moves.length)];
+          liveGameMoves.push(m.san);
+          liveGameEvals.push(0);
+          liveGameChess.move(m);
+        }
+      }
+    } catch (e) {
+      console.error('Error making background selfplay move:', e);
+      // Fallback
+      const moves = liveGameChess.moves();
+      if (moves.length > 0) {
+        const m = moves[Math.floor(Math.random() * moves.length)];
+        liveGameMoves.push(m);
+        liveGameEvals.push(0);
+        liveGameChess.move(m);
+      }
+    }
+  }
+}, 4000);
+
+// -----------------------------------------------------------------------------
+// API ENDPOINTS
+// -----------------------------------------------------------------------------
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', serverTime: new Date().toISOString() });
+});
+
+/**
+ * POST endpoint to perform real-time Chess Engine move search via API
+ */
+app.post('/api/engine/search', (req, res) => {
+  const { fen, depth, personality, evalMode, moveHistory, timeLimitMs, quiescenceLimit, maxCapturesToCheck } = req.body;
+  
+  const searchFen = fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  const searchDepth = Math.min(8, Math.max(1, parseInt(depth) || 3));
+  const enginePersonality = personality || 'positional';
+  const engineEvalMode = evalMode || 'hybrid';
+  const history = Array.isArray(moveHistory) ? moveHistory : [];
+
+  try {
+    const searchEngine = new ChessEngine({
+      maxDepth: searchDepth,
+      personality: enginePersonality as any,
+      evalMode: engineEvalMode as any,
+      timeLimitMs: timeLimitMs ? parseInt(timeLimitMs) : undefined,
+      quiescenceLimit: quiescenceLimit ? parseInt(quiescenceLimit) : undefined,
+      maxCapturesToCheck: maxCapturesToCheck ? parseInt(maxCapturesToCheck) : undefined
+    });
+
+    const searchResult = searchEngine.search(searchFen, 0.75, history);
+
+    res.json({
+      success: true,
+      fen: searchFen,
+      config: {
+        depth: searchDepth,
+        personality: enginePersonality,
+        evalMode: engineEvalMode,
+        timeLimitMs,
+        quiescenceLimit,
+        maxCapturesToCheck
+      },
+      bestMove: searchResult.bestMove ? {
+        from: searchResult.bestMove.from,
+        to: searchResult.bestMove.to,
+        promotion: searchResult.bestMove.promotion,
+        san: searchResult.bestMove.san,
+        lan: searchResult.bestMove.lan,
+        piece: searchResult.bestMove.piece,
+        color: searchResult.bestMove.color
+      } : null,
+      score: searchResult.score,
+      scoreFormatted: (searchResult.score / 100).toFixed(2),
+      depthReached: searchResult.depth,
+      nodesExplored: searchResult.nodes,
+      nps: searchResult.nps,
+      pv: searchResult.pv,
+      bookOpeningName: searchResult.bookOpeningName || null
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Error occurred during engine calculation'
+    });
+  }
+});
+
+/**
+ * GET current cloud training status and statistics
+ */
+app.get('/api/cloud-training/status', (req, res) => {
+  const winPercent = Math.round((winCount / totalGamesPlayed) * 100);
+  const drawPercent = Math.round((drawCount / totalGamesPlayed) * 100);
+  const lossPercent = 100 - winPercent - drawPercent;
+
+  res.json({
+    totalGames: totalGamesPlayed,
+    winRate: winPercent,
+    drawRate: drawPercent,
+    lossRate: lossPercent,
+    currentElo: currentEloHybrid,
+    currentEloTraditional,
+    currentEloNeural,
+    currentEloNeuralCore,
+    policyLoss: parseFloat(currentPolicyLoss.toFixed(4)),
+    valueLoss: parseFloat(currentValueLoss.toFixed(4)),
+    trainSpeed: 1450, // simulated steps/sec
+    gamesInCloud: totalGamesPlayed,
+    recentGames: recentFinishedGames,
+    eloHistory,
+    lossHistory,
+    winLossHistory,
+    enginesList,
+    trainingLogs,
+    heatmapFocus,
+    liveGame: {
+      id: liveGameId,
+      whiteEngine: liveWhiteEngine,
+      blackEngine: liveBlackEngine,
+      fen: liveGameChess.fen(),
+      moveHistory: liveGameMoves,
+      evalHistory: liveGameEvals,
+      isGameOver: liveGameChess.isGameOver(),
+      turn: liveGameChess.turn(),
+      startTime: liveGameStartTime
+    }
+  });
+});
+
+/**
+ * POST endpoint to toggle training status for a specific engine
+ */
+app.post('/api/cloud-training/toggle-engine', (req, res) => {
+  const { id } = req.body;
+  const engine = enginesList.find(e => e.id === id);
+  if (engine) {
+    engine.active = !engine.active;
+    addTrainingLog(
+      `Engine "${engine.shortName}" training process manually ${engine.active ? 'RESUMED' : 'PAUSED'} by operator.`,
+      engine.active ? 'success' : 'warn',
+      'System'
+    );
+    res.json({ success: true, engine });
+  } else {
+    res.status(404).json({ success: false, error: 'Engine not found' });
+  }
+});
+
+/**
+ * POST endpoint to request Gemini Grandmaster analysis for a FEN position
+ */
+app.post('/api/gemini/analyze', async (req, res) => {
+  const { fen, moveHistory, evalScore, personality, depth } = req.body;
+
+  if (!fen) {
+    res.status(400).json({ error: 'Missing chess FEN string' });
+    return;
+  }
+
+  // Fallback narrative generation if API Key is not set or if there's an error
+  const fallbackCommentary = (pId: string) => {
+    switch (pId) {
+      case 'tactical':
+        return `As a Tactical Attacker, this position evaluates to ${evalScore > 0 ? '+' : ''}${(evalScore / 100).toFixed(2)} pawns. I see strong kingside potential. The coordination of active knights on central outposts and the open lines for the queen indicate a tactical storm is brewing. I would recommend pressing forward with high-tempo, forcing checks and open files sacrifices!`;
+      case 'positional':
+        return `From a Positional perspective, this board holds a rating of ${evalScore > 0 ? '+' : ''}${(evalScore / 100).toFixed(2)}. The crucial factor here is the pawn chain safety and bishop pair mobility. White possesses an excellent central space advantage, though Black has solid defensive fortresses. I suggest gradual expansion, prophylactic moves to shut down counterplay, and squeezing the opponent slowly.`;
+      case 'gambiter':
+        return `The current evaluation is ${evalScore > 0 ? '+' : ''}${(evalScore / 100).toFixed(2)}. This is a paradise for dynamic initiative! Forget material counts; we should focus on maximum piece development, quick rook lifts, and open files. Sacrificing the b-pawn or an exchange here could fully blast open the opponent king's defenses. Play for direct speed!`;
+      case 'defensive':
+        default:
+        return `Evaluating strictly with defense and safety first (${evalScore > 0 ? '+' : ''}${(evalScore / 100).toFixed(2)}). Our king is secure, and there are no glaring weaknesses in the structure. Do not get tempted by risky central sacrifices. Keep your pawn chains robust, guard key flight squares, and wait for them to overextend. A draw is a highly acceptable strategic outcome.`;
+    }
+  };
+
+  if (!ai) {
+    res.json({
+      commentary: fallbackCommentary(personality || 'positional'),
+      isMocked: true,
+      reason: 'Gemini API key is not configured in Secrets.'
+    });
+    return;
+  }
+
+  try {
+    const systemPrompt = `You are an elite, open-source Chess Engine Grandmaster with a specific personality mode: "${personality}".
+Provide a concise, expert analysis (around 3 to 4 sentences maximum) of the chess board position described by the FEN. Explain:
+1. The strategic balance of the position.
+2. Core tactical ideas or structural weaknesses.
+3. Suggest the optimal 1-2 moves and explain why.
+Match your narrative tone strictly to the specified personality:
+- "tactical": Energetic, aggressive, looking for sacrifices, checks, and mates.
+- "positional": Calm, structural, focusing on space, files, pawn structures, and prophylaxis.
+- "gambiter": Daring, fun, prioritizing time and piece activity over raw material, loves open boards.
+- "defensive": Cautious, focused on solid walls, king safety, preventing opponent ideas, loves solid draws.`;
+
+    const userPrompt = `Position FEN: ${fen}
+Evaluation score: ${evalScore} centipawns
+Current search depth: ${depth}
+Recent move history: ${moveHistory ? moveHistory.slice(-5).join(' -> ') : 'None'}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.8,
+      }
+    });
+
+    res.json({
+      commentary: response.text || fallbackCommentary(personality || 'positional'),
+      isMocked: false
+    });
+  } catch (error: any) {
+    console.error('Gemini API search error:', error);
+    res.json({
+      commentary: fallbackCommentary(personality || 'positional'),
+      error: error.message || 'Error communicating with Gemini API',
+      isMocked: true
+    });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// VITE DEV SERVER & PRODUCTION ASSET SERVER SETUP
+// -----------------------------------------------------------------------------
+
+async function startServer() {
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

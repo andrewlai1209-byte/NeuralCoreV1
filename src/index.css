@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+:root {
+  --bg-main: #020617;
+  --bg-card: #0f172a;
+  --border-color: #1e293b;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --accent-color: #10b981;
+}
+
+/* HIGH CONTRAST MODE THEME OVERRIDES */
+.high-contrast {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+}
+
+.high-contrast aside,
+.high-contrast header,
+.high-contrast main,
+.high-contrast #app_root,
+.high-contrast #dashboard_panel,
+.high-contrast #game_replay_lab,
+.high-contrast #profile_database_view {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+}
+
+.high-contrast .bg-slate-950,
+.high-contrast .bg-slate-900,
+.high-contrast .bg-slate-950\/20,
+.high-contrast .bg-slate-950\/40,
+.high-contrast .bg-slate-950\/80,
+.high-contrast .bg-slate-900\/40 {
+  background-color: #000000 !important;
+}
+
+.high-contrast .border,
+.high-contrast .border-r,
+.high-contrast .border-b,
+.high-contrast .border-t,
+.high-contrast .border-slate-800,
+.high-contrast .border-slate-850 {
+  border-color: #ffffff !important;
+}
+
+.high-contrast .text-emerald-400,
+.high-contrast .text-teal-400,
+.high-contrast .text-amber-400 {
+  color: #ffff00 !important; /* bright vibrant yellow for readable contrast */
+}
+
+.high-contrast .text-slate-400,
+.high-contrast .text-slate-500 {
+  color: #f8fafc !important;
+}
+
+.high-contrast .bg-emerald-500,
+.high-contrast .bg-emerald-500\/10,
+.high-contrast .bg-emerald-500\/20,
+.high-contrast .bg-gradient-to-br,
+.high-contrast .bg-gradient-to-r {
+  background-image: none !important;
+  background-color: #ffff00 !important;
+  color: #000000 !important;
+}
+
+.high-contrast .text-slate-950,
+.high-contrast .text-slate-900 {
+  color: #000000 !important;
+}
+
+.high-contrast button {
+  border-width: 1px;
+}
+
+.high-contrast .bg-emerald-500\/10 {
+  background-color: rgba(255, 255, 0, 0.15) !important;
+}

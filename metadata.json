@@ -1,0 +1,6 @@
+{
+  "name": "Neural Chess Engine & Live Training Dashboard",
+  "description": "An open-source chess engine with a live cloud training dashboard, real-time evaluation metrics, interactive gameplay, and Gemini-powered analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
