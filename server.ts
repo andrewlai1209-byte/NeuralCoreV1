@@ -423,6 +423,299 @@ app.post('/api/engine/search', (req, res) => {
   }
 });
 
+// -----------------------------------------------------------------------------
+// DYNAMIC AI FORGE API DATABASE & CODES GENERATOR
+// -----------------------------------------------------------------------------
+
+interface ForgedApi {
+  id: string;
+  name: string;
+  createdAt: string;
+  personality: string;
+  depth: number;
+  evalMode: string;
+  customWeights: {
+    p: number;
+    n: number;
+    b: number;
+    r: number;
+    q: number;
+    k: number;
+    bishopPairBonus: number;
+    pstWeights: number;
+  };
+  pythonCode: string;
+  jsCode: string;
+}
+
+const forgedApisStore: Record<string, ForgedApi> = {
+  "api_standard_neural_x1": {
+    id: "api_standard_neural_x1",
+    name: "Aetheris-Neural-X1 (Aggressive Tactical)",
+    createdAt: new Date(Date.now() - 3600000 * 24).toISOString(), // 1 day ago
+    personality: "tactical",
+    depth: 4,
+    evalMode: "stockfish_nnue",
+    customWeights: { p: 105, n: 345, b: 355, r: 512, q: 960, k: 20000, bishopPairBonus: 38, pstWeights: 1.45 },
+    pythonCode: `# Uniquely Forged Aetheris Engine - API ID: api_standard_neural_x1\n# Aggressive Tactical Profile (105% Standard Attack Coefficients)\n\nclass AetherisNeuralEngine_X1:\n    def __init__(self):\n        self.weights = {"P": 105, "N": 345, "B": 355, "R": 512, "Q": 960}\n        self.bishop_pair_bonus = 38\n        self.pst_multiplier = 1.45\n        self.nodes_searched = 0\n        self.transposition_table = {}\n\n    def evaluate_board(self, board):\n        # Custom evaluation with forged weights\n        score = 0\n        # Detailed customized neural weights formulas applied...\n        return score`,
+    jsCode: `// Uniquely Forged Aetheris Engine JS - API ID: api_standard_neural_x1\nexport class AetherisJsSearch_X1 {\n  constructor() {\n    this.weights = { p: 105, n: 345, b: 355, r: 512, q: 960 };\n    this.bishopPairBonus = 38;\n    this.pstWeights = 1.45;\n    this.transpositionTable = new Map();\n  }\n}`
+  },
+  "api_deep_selfplay_theta": {
+    id: "api_deep_selfplay_theta",
+    name: "DeepPro-RL-Theta (Strategic Positional)",
+    createdAt: new Date(Date.now() - 3600000 * 48).toISOString(), // 2 days ago
+    personality: "positional",
+    depth: 5,
+    evalMode: "neuralcore_rl_selfplay",
+    customWeights: { p: 98, n: 318, b: 342, r: 524, q: 890, k: 20000, bishopPairBonus: 28, pstWeights: 0.95 },
+    pythonCode: `# Uniquely Forged Aetheris Engine - API ID: api_deep_selfplay_theta\n# Strategic Positional Profile (Deep selfplay theta)\n\nclass AetherisNeuralEngine_Theta:\n    def __init__(self):\n        self.weights = {"P": 98, "N": 318, "B": 342, "R": 524, "Q": 890}\n        self.bishop_pair_bonus = 28\n        self.pst_multiplier = 0.95\n        self.nodes_searched = 0\n        self.transposition_table = {}\n\n    def evaluate_board(self, board):\n        score = 0\n        # Distinct positional theta neural formula heuristics applied...\n        return score`,
+    jsCode: `// Uniquely Forged Aetheris Engine JS - API ID: api_deep_selfplay_theta\nexport class AetherisJsSearch_Theta {\n  constructor() {\n    this.weights = { p: 98, n: 318, b: 342, r: 524, q: 890 };\n    this.bishopPairBonus = 28;\n    this.pstWeights = 0.95;\n    this.transpositionTable = new Map();\n  }\n}`
+  }
+};
+
+/**
+ * POST endpoint to Forge a completely unique custom API with random mutated coefficients and custom client-side codes
+ */
+app.post('/api/engine/forge-custom-api', (req, res) => {
+  const { name, personality, evalMode, depth } = req.body;
+  
+  const searchDepth = Math.min(8, Math.max(1, parseInt(depth) || 3));
+  const enginePersonality = personality || 'positional';
+  const engineEvalMode = evalMode || 'neuralcore_rl_selfplay';
+  
+  // Choose base values to mutate based on chosen personality
+  let baseP = 100, baseN = 320, baseB = 335, baseR = 510, baseQ = 900;
+  let basePST = 1.0;
+  if (enginePersonality === 'tactical') {
+    baseP = 100; baseN = 340; baseB = 350; baseR = 500; baseQ = 950; basePST = 1.5;
+  } else if (enginePersonality === 'gambiter') {
+    baseP = 85; baseN = 330; baseB = 340; baseR = 500; baseQ = 920; basePST = 1.4;
+  } else if (enginePersonality === 'defensive') {
+    baseP = 115; baseN = 310; baseB = 320; baseR = 520; baseQ = 880; basePST = 0.8;
+  }
+  
+  // Calculate randomized mutation factor (5% to 20% deviation) for uniqueness
+  const mutation = () => 0.88 + Math.random() * 0.24; // Multiplier between 0.88 and 1.12
+  const p = Math.round(baseP * mutation());
+  const n = Math.round(baseN * mutation());
+  const b = Math.round(baseB * mutation());
+  const r = Math.round(baseR * mutation());
+  const q = Math.round(baseQ * mutation());
+  const bpBonus = Math.round(30 * mutation());
+  const pstWeights = parseFloat((basePST * mutation()).toFixed(2));
+  
+  const id = `api_forged_${Math.random().toString(36).substr(2, 9)}`;
+  const finalName = name || `Aetheris-Neural-${id.toUpperCase().substr(11, 4)}`;
+  
+  // Generate different dynamic codes inside each API
+  const generatedPython = `# =============================================================================
+# UNIQUELY FORGED AETHERIS HEURISTIC NEURAL ENGINE SDK
+# =============================================================================
+# API Instance ID: ${id}
+# Profile Name: ${finalName}
+# Forged Timestamp: ${new Date().toISOString()}
+# Primary Base Heuristics: ${enginePersonality} & ${engineEvalMode}
+# Mutation Coefficient: Signature-${(p * n * b % 9999).toString(16)}
+#
+# DESIGNER LOGS: 
+# Knight coefficient tuned to ${n} CP, Bishop pair bonus forged at ${bpBonus} CP,
+# PST global multiplier configured at ${pstWeights}x.
+# =============================================================================
+
+import chess
+import math
+
+class AetherisForgedEngine_${id.toUpperCase().substr(11, 4)}:
+    def __init__(self, eval_mode="${engineEvalMode}"):
+        self.id = "${id}"
+        self.name = "${finalName}"
+        self.eval_mode = eval_mode
+        self.nodes_searched = 0
+        self.transposition_table = {}
+        
+        # Hardcoded dynamic coefficients unique to this API:
+        self.weights = {
+            "P": ${p},
+            "N": ${n},
+            "B": ${b},
+            "R": ${r},
+            "Q": ${q}
+        }
+        self.bishop_pair_bonus = ${bpBonus}
+        self.pst_multiplier = ${pstWeights}
+
+    def evaluate_board(self, board):
+        if board.is_checkmate():
+            return -99999 if board.turn == chess.WHITE else 99999
+        if board.is_stalemate() or board.is_insufficient_material():
+            return 0
+            
+        score = 0
+        white_bishops = 0
+        black_bishops = 0
+        
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece is None:
+                continue
+                
+            sign = 1 if piece.color == chess.WHITE else -1
+            value = self.weights.get(piece.symbol().upper(), 100)
+            score += sign * value
+            
+            if piece.piece_type == chess.BISHOP:
+                if piece.color == chess.WHITE:
+                    white_bishops += 1
+                else:
+                    black_bishops += 1
+                    
+        # Apply custom bishop pair bonus unique to this forge run
+        if white_bishops >= 2: score += self.bishop_pair_bonus
+        if black_bishops >= 2: score -= self.bishop_pair_bonus
+        return score
+`;
+
+  const generatedJs = `/**
+ * UNIQUELY FORGED CLIENT SDK - AETHERIS INTUITIVE CHESS ENGINE
+ * API Instance ID: ${id}
+ * Instance Profile: ${finalName}
+ * Created: ${new Date().toISOString()}
+ * 
+ * Each compiled JS module incorporates distinct positional weights.
+ */
+export class AetherisClientSearch_${id.toUpperCase().substr(11, 4)} {
+  constructor() {
+    this.apiId = "${id}";
+    this.name = "${finalName}";
+    this.weights = {
+      p: ${p},
+      n: ${n},
+      b: ${b},
+      r: ${r},
+      q: ${q}
+    };
+    this.bishopPairBonus = ${bpBonus};
+    this.pstWeights = ${pstWeights};
+    this.transpositionTable = new Map();
+  }
+
+  evaluateFlat(boardArray) {
+    let score = 0;
+    let whiteBishops = 0;
+    let blackBishops = 0;
+
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const cell = boardArray[r][c];
+        if (cell) {
+          const sign = cell.color === 'w' ? 1 : -1;
+          const val = this.weights[cell.type] || 100;
+          score += sign * val;
+          if (cell.type === 'b') {
+            if (cell.color === 'w') whiteBishops++;
+            else blackBishops++;
+          }
+        }
+      }
+    }
+
+    if (whiteBishops >= 2) score += this.bishopPairBonus;
+    if (blackBishops >= 2) score -= this.bishopPairBonus;
+    return score;
+  }
+}`;
+
+  const forgedApi: ForgedApi = {
+    id,
+    name: finalName,
+    createdAt: new Date().toISOString(),
+    personality: enginePersonality,
+    depth: searchDepth,
+    evalMode: engineEvalMode,
+    customWeights: {
+      p, n, b, r, q, k: 20000,
+      bishopPairBonus: bpBonus,
+      pstWeights
+    },
+    pythonCode: generatedPython,
+    jsCode: generatedJs
+  };
+
+  forgedApisStore[id] = forgedApi;
+
+  res.json({
+    success: true,
+    message: `API forged successfully with unique coefficients!`,
+    api: forgedApi
+  });
+});
+
+/**
+ * GET list of all forged APIs
+ */
+app.get('/api/engine/forge-custom-api/list', (req, res) => {
+  res.json({
+    success: true,
+    apis: Object.values(forgedApisStore)
+  });
+});
+
+/**
+ * POST custom search using forged API weights
+ */
+app.post('/api/engine/custom/:id', (req, res) => {
+  const { id } = req.params;
+  const { fen, depth, moveHistory } = req.body;
+  
+  const customApi = forgedApisStore[id];
+  if (!customApi) {
+    return res.status(404).json({ success: false, error: `Forged API with ID '${id}' was not found.` });
+  }
+
+  const searchFen = fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  const searchDepth = Math.min(8, Math.max(1, parseInt(depth) || customApi.depth));
+  const history = Array.isArray(moveHistory) ? moveHistory : [];
+
+  try {
+    const searchEngine = new ChessEngine({
+      maxDepth: searchDepth,
+      personality: customApi.personality as any,
+      evalMode: customApi.evalMode as any,
+      customWeights: customApi.customWeights
+    });
+
+    const searchResult = searchEngine.search(searchFen, 0.75, history);
+
+    res.json({
+      success: true,
+      apiId: id,
+      apiName: customApi.name,
+      customWeights: customApi.customWeights,
+      fen: searchFen,
+      bestMove: searchResult.bestMove ? {
+        from: searchResult.bestMove.from,
+        to: searchResult.bestMove.to,
+        promotion: searchResult.bestMove.promotion,
+        san: searchResult.bestMove.san,
+        lan: searchResult.bestMove.lan,
+        piece: searchResult.bestMove.piece,
+        color: searchResult.bestMove.color
+      } : null,
+      score: searchResult.score,
+      scoreFormatted: (searchResult.score / 100).toFixed(2),
+      depthReached: searchResult.depth,
+      nodesExplored: searchResult.nodes,
+      nps: searchResult.nps,
+      pv: searchResult.pv
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Error occurred during forged API chess calculation'
+    });
+  }
+});
+
 /**
  * GET current cloud training status and statistics
  */

@@ -37,6 +37,16 @@ export interface EngineConfig {
   maxCapturesToCheck?: number;  // Max captures to check in quiescence search
   difficulty?: 'beginner' | 'intermediate' | 'expert' | 'grandmaster';
   leezaThinkingThreads?: number; // Simulated GPU thinking threads for Leeza
+  customWeights?: {
+    p?: number;
+    n?: number;
+    b?: number;
+    r?: number;
+    q?: number;
+    k?: number;
+    bishopPairBonus?: number;
+    pstWeights?: number;
+  };
 }
 
 export interface TrainingGame {

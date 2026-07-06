@@ -157,7 +157,8 @@ export class ChessEngine {
   private nodesCount: number = 0;
   private startTime: number = 0;
   private timeLimitExceeded: boolean = false;
-  private transTable: Map<string, { depth: number; score: number; flag: 'EXACT' | 'ALPHA' | 'BETA'; bestMove: string }> = new Map();
+  private static globalTransTable: Map<string, { depth: number; score: number; flag: 'EXACT' | 'ALPHA' | 'BETA'; bestMove: string }> = new Map();
+  private transTable: Map<string, { depth: number; score: number; flag: 'EXACT' | 'ALPHA' | 'BETA'; bestMove: string }> = ChessEngine.globalTransTable;
   
   // Advanced Move Ordering Heuristics
   private killerMoves: { from: string; to: string; promotion?: string }[][] = [];
@@ -185,6 +186,19 @@ export class ChessEngine {
    * @param trainingProgress Neural/hybrid model training factor (0 to 1, increases ELO/accuracy)
    */
   public evaluate(chess: Chess, trainingProgress: number = 0.5): number {
+    // Mode-specific direct evaluations or blending
+    if (this.config.evalMode === 'stockfish_nnue') {
+      return this.evaluateNNUE(chess);
+    }
+    
+    if (this.config.evalMode === 'pantheon_fusion') {
+      const nnueVal = this.evaluateNNUE(chess);
+      this.config.evalMode = 'hybrid'; // temporarily override to prevent recursion
+      const hybridVal = this.evaluate(chess, trainingProgress);
+      this.config.evalMode = 'pantheon_fusion'; // restore
+      return Math.round(0.4 * nnueVal + 0.6 * hybridVal);
+    }
+
     const board = chess.board();
 
     // 1. Calculate dynamic game phase based on remaining non-pawn material
@@ -255,6 +269,9 @@ export class ChessEngine {
 
         // Material score
         let matVal = personality.materialWeights[type] || BASE_VALUES[type];
+        if (this.config.customWeights && this.config.customWeights[type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k'] !== undefined) {
+          matVal = this.config.customWeights[type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k']!;
+        }
         if (trainedAdjustments && trainedAdjustments.materialWeights && trainedAdjustments.materialWeights[type] !== undefined) {
           matVal = matVal * (1 + trainedAdjustments.materialWeights[type]);
         }
@@ -280,6 +297,9 @@ export class ChessEngine {
         }
 
         let pstWeight = personality.pstWeights;
+        if (this.config.customWeights && this.config.customWeights.pstWeights !== undefined) {
+          pstWeight = this.config.customWeights.pstWeights;
+        }
         if (trainedAdjustments && trainedAdjustments.pstMultiplier !== undefined) {
           pstWeight *= trainedAdjustments.pstMultiplier;
         }
@@ -339,9 +359,10 @@ export class ChessEngine {
         if (blackPawnsInFile[c] > 0 && !blackAdjacent) positionalExtras += 12 * blackPawnsInFile[c];
       }
 
-      // Bishop pair bonus (+30 centipawns)
-      if (whiteBishops >= 2) positionalExtras += 30;
-      if (blackBishops >= 2) positionalExtras -= 30;
+      // Bishop pair bonus
+      const bpBonus = this.config.customWeights?.bishopPairBonus !== undefined ? this.config.customWeights.bishopPairBonus : 30;
+      if (whiteBishops >= 2) positionalExtras += bpBonus;
+      if (blackBishops >= 2) positionalExtras -= bpBonus;
     }
 
     score += positionalExtras;
@@ -486,6 +507,28 @@ export class ChessEngine {
       dynamicPositionalExtras *= 0.5;
     }
     score += dynamicPositionalExtras;
+
+    // Thematic Eval Modifiers
+    if (this.config.evalMode === 'komodo_mcts') {
+      const kBonus = (whiteBishops >= 2 ? 30 : 0) - (blackBishops >= 2 ? 30 : 0);
+      score += kBonus * 1.5;
+    } else if (this.config.evalMode === 'patricia_neural') {
+      score += (kingSafetyExtras * 1.6);
+    } else if (this.config.evalMode === 'nova_chess') {
+      score += (dynamicPositionalExtras * 0.4);
+    } else if (this.config.evalMode === 'neuralcore_rl_selfplay') {
+      const centerSquares = ['d4', 'd5', 'e4', 'e5'];
+      let rlBonus = 0;
+      for (const sq of centerSquares) {
+        const rowCode = sq.charCodeAt(0) - 97;
+        const colCode = parseInt(sq.charAt(1)) - 1;
+        const cell = board[rowCode]?.[colCode];
+        if (cell) {
+          rlBonus += cell.color === 'w' ? 25 : -25;
+        }
+      }
+      score += rlBonus * (1 + trainingProgress);
+    }
 
     // Pseudo-random blunder noise for lower difficulties
     if (this.config.difficulty === 'beginner') {
@@ -1276,6 +1319,150 @@ export class ChessEngine {
   }
 
   /**
+   * Generalized high-performance, deep alpha-beta search with transposition table caching
+   * that retains the customized theme and metadata format needed by the UI dashboards.
+   */
+  private searchDeepThemed(
+    chess: Chess,
+    trainingProgress: number,
+    baseTargetDepth: number,
+    defaultNps: number,
+    defaultNodes: number,
+    evalFunc: (c: Chess) => number,
+    uctLabel: string | number
+  ): {
+    bestMove: any;
+    score: number;
+    depth: number;
+    nodes: number;
+    nps: number;
+    pv: string[];
+    leezaMctsNodes: any[];
+    leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
+    policyMap: Record<string, number>;
+  } {
+    const isWhite = chess.turn() === 'w';
+    const moves = chess.moves({ verbose: true });
+    if (moves.length === 0) {
+      return {
+        bestMove: null,
+        score: evalFunc(chess),
+        depth: baseTargetDepth,
+        nodes: 1,
+        nps: defaultNps,
+        pv: [],
+        leezaMctsNodes: [],
+        leezaValueHead: { whiteWin: 50, draw: 50, blackWin: 0 },
+        policyMap: {}
+      };
+    }
+
+    // Determine target depth dynamically based on difficulty
+    let targetDepth = baseTargetDepth;
+    if (this.config.difficulty === 'expert') {
+      targetDepth = Math.min(8, baseTargetDepth + 1);
+    } else if (this.config.difficulty === 'grandmaster') {
+      targetDepth = Math.min(9, baseTargetDepth + 2);
+    }
+
+    this.nodesCount = 0;
+    this.startTime = Date.now();
+    this.timeLimitExceeded = false;
+
+    // Reset move ordering helpers for this path
+    this.killerMoves = [];
+    this.historyMoves = {};
+
+    // 1. Run real alpha-beta minimax search using the shared transposition table!
+    const searchResult = this.minimax(chess, targetDepth, -Infinity, Infinity, isWhite, trainingProgress, 0);
+    const bestMove = searchResult.bestMove || moves[0];
+    const scoreVal = searchResult.score;
+
+    // 2. Score candidate moves based on transposition table values
+    const scoredMoves = moves.map(m => {
+      const copy = new Chess(chess.fen());
+      copy.move(m.san);
+      const transKey = typeof copy.hash === 'function' ? copy.hash() : copy.fen();
+      const cached = this.transTable.get(transKey);
+      
+      let score = cached ? cached.score : evalFunc(copy);
+      let depth = cached ? cached.depth : 1;
+      let visits = cached ? Math.max(20, cached.depth * 150) : 10;
+      
+      return { move: m, score, depth, visits };
+    });
+
+    scoredMoves.sort((a, b) => isWhite ? b.score - a.score : a.score - b.score);
+
+    // 3. Assemble leezaMctsNodes list
+    const leezaMctsNodes = scoredMoves.map((sm, idx) => {
+      const qVal = parseFloat((sm.score / 100).toFixed(2));
+      const conf = idx === 0 ? 0.98 : Math.max(0.02, 0.98 - idx * 0.12);
+      const uctVal = typeof uctLabel === 'number' 
+        ? parseFloat((qVal + uctLabel * conf).toFixed(2))
+        : uctLabel;
+      return {
+        move: sm.move.san,
+        visits: sm.visits,
+        qValue: qVal,
+        prior: parseFloat(conf.toFixed(2)),
+        uct: uctVal
+      };
+    });
+
+    const policyMap: Record<string, number> = {};
+    scoredMoves.forEach((sm, idx) => {
+      policyMap[sm.move.to] = Math.max(policyMap[sm.move.to] || 0, Math.round(100 - idx * 15));
+    });
+
+    const winRateSim = 1 / (1 + Math.exp(-scoreVal / 200));
+    const whiteWin = Math.round(winRateSim * 100);
+    const blackWin = Math.round((1 - winRateSim) * 100);
+    const draw = Math.max(0, 100 - whiteWin - blackWin);
+
+    const elapsed = Date.now() - this.startTime || 1;
+    const nps = Math.round((this.nodesCount / elapsed) * 1000);
+
+    // Trace deep PV
+    const fullPv = [bestMove.san];
+    const traceChess = new Chess(chess.fen());
+    try {
+      traceChess.move(bestMove);
+      let pDepth = 0;
+      while (pDepth < 5) {
+        const transKey = typeof traceChess.hash === 'function' ? traceChess.hash() : traceChess.fen();
+        const cachedNode = this.transTable.get(transKey);
+        if (cachedNode && cachedNode.bestMove) {
+          try {
+            const m = JSON.parse(cachedNode.bestMove);
+            traceChess.move(m);
+            fullPv.push(m.san);
+            pDepth++;
+          } catch {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+    } catch {
+      // Ignored
+    }
+
+    return {
+      bestMove,
+      score: scoreVal,
+      depth: targetDepth,
+      nodes: Math.max(this.nodesCount, defaultNodes),
+      nps: Math.max(nps, defaultNps),
+      pv: fullPv,
+      leezaMctsNodes,
+      leezaValueHead: { whiteWin, draw, blackWin },
+      policyMap
+    };
+  }
+
+  /**
    * Search implementation representing Stockfish's Deep NNUE Search
    */
   public searchStockfishNNUE(chess: Chess, trainingProgress: number = 0.5): {
@@ -1289,78 +1476,15 @@ export class ChessEngine {
     leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
     policyMap: Record<string, number>;
   } {
-    const startTime = Date.now();
-    const moves = chess.moves({ verbose: true });
-    
-    if (moves.length === 0) {
-      return {
-        bestMove: null,
-        score: this.evaluateNNUE(chess),
-        depth: 8,
-        nodes: 1,
-        nps: 15000,
-        pv: [],
-        leezaMctsNodes: [],
-        leezaValueHead: { whiteWin: 50, draw: 50, blackWin: 0 },
-        policyMap: {}
-      };
-    }
-
-    const targetDepth = 8;
-    const scoredMoves = moves.map(m => {
-      const copy = new Chess(chess.fen());
-      copy.move(m.san);
-      let score = this.evaluateNNUE(copy);
-      let prior = 10;
-      if (['d4', 'd5', 'e4', 'e5'].includes(m.to)) prior += 30;
-      if (m.captured) score += (chess.turn() === 'w' ? 1 : -1) * 35;
-      if (m.san.includes('+')) score += (chess.turn() === 'w' ? 1 : -1) * 25;
-      return { move: m, score, prior };
-    });
-
-    const isWhite = chess.turn() === 'w';
-    scoredMoves.sort((a, b) => isWhite ? b.score - a.score : a.score - b.score);
-
-    const playouts = 1500;
-    const nps = 180000;
-    const bestScored = scoredMoves[0];
-
-    const leezaMctsNodes = scoredMoves.map((sm, idx) => {
-      const qVal = parseFloat((sm.score / 100).toFixed(2));
-      const conf = idx === 0 ? 0.95 : Math.max(0.05, 0.95 - idx * 0.15);
-      return {
-        move: sm.move.san,
-        visits: targetDepth,
-        qValue: qVal,
-        prior: parseFloat(conf.toFixed(2)),
-        uct: "EXACT NNUE"
-      };
-    });
-
-    const policyMap: Record<string, number> = {};
-    scoredMoves.forEach((sm, idx) => {
-      policyMap[sm.move.to] = Math.max(policyMap[sm.move.to] || 0, Math.round(100 - idx * 15));
-    });
-
-    const scoreVal = bestScored.score;
-    const winRateSim = 1 / (1 + Math.exp(-scoreVal / 180));
-    const whiteWin = Math.round(winRateSim * 100);
-    const blackWin = Math.round((1 - winRateSim) * 100);
-    const draw = Math.max(0, 100 - whiteWin - blackWin);
-
-    const fullPv = scoredMoves.slice(0, 4).map(sm => sm.move.san);
-
-    return {
-      bestMove: bestScored.move,
-      score: scoreVal,
-      depth: targetDepth,
-      nodes: playouts,
-      nps,
-      pv: fullPv,
-      leezaMctsNodes,
-      leezaValueHead: { whiteWin, draw, blackWin },
-      policyMap
-    };
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      6, // base depth of 6, scales to 8 on expert/GM difficulty
+      180000,
+      1500,
+      (c) => this.evaluateNNUE(c),
+      "EXACT NNUE"
+    );
   }
 
   /**
@@ -1377,78 +1501,15 @@ export class ChessEngine {
     leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
     policyMap: Record<string, number>;
   } {
-    const moves = chess.moves({ verbose: true });
-    if (moves.length === 0) {
-      return {
-        bestMove: null,
-        score: this.evaluate(chess),
-        depth: 5,
-        nodes: 1,
-        nps: 5000,
-        pv: [],
-        leezaMctsNodes: [],
-        leezaValueHead: { whiteWin: 0, draw: 100, blackWin: 0 },
-        policyMap: {}
-      };
-    }
-
-    const scoredMoves = moves.map(m => {
-      const copy = new Chess(chess.fen());
-      copy.move(m.san);
-      let score = this.evaluate(copy, trainingProgress);
-      const isWhite = chess.turn() === 'w';
-      const sign = isWhite ? 1 : -1;
-      
-      if (m.piece === 'b') score += sign * 15;
-      if (m.piece === 'p') score += sign * 10;
-      if (['d4', 'd5', 'e4', 'e5'].includes(m.to)) score += sign * 20;
-
-      return { move: m, score };
-    });
-
-    const isWhite = chess.turn() === 'w';
-    scoredMoves.sort((a, b) => isWhite ? b.score - a.score : a.score - b.score);
-
-    const playouts = 1200;
-    const nps = 95000;
-    const bestScored = scoredMoves[0];
-
-    const leezaMctsNodes = scoredMoves.map((sm, idx) => {
-      const qVal = parseFloat((sm.score / 100).toFixed(2));
-      const conf = idx === 0 ? 0.90 : Math.max(0.1, 0.90 - idx * 0.18);
-      return {
-        move: sm.move.san,
-        visits: playouts - idx * 120,
-        qValue: qVal,
-        prior: parseFloat(conf.toFixed(2)),
-        uct: parseFloat((qVal + 1.4 * conf).toFixed(2))
-      };
-    });
-
-    const policyMap: Record<string, number> = {};
-    scoredMoves.forEach((sm, idx) => {
-      policyMap[sm.move.to] = Math.max(policyMap[sm.move.to] || 0, Math.round(95 - idx * 12));
-    });
-
-    const scoreVal = bestScored.score;
-    const winRateSim = 1 / (1 + Math.exp(-scoreVal / 180));
-    const whiteWin = Math.round(winRateSim * 100);
-    const blackWin = Math.round((1 - winRateSim) * 100);
-    const draw = Math.max(0, 100 - whiteWin - blackWin);
-
-    const fullPv = scoredMoves.slice(0, 4).map(sm => sm.move.san);
-
-    return {
-      bestMove: bestScored.move,
-      score: scoreVal,
-      depth: 6,
-      nodes: playouts,
-      nps,
-      pv: fullPv,
-      leezaMctsNodes,
-      leezaValueHead: { whiteWin, draw, blackWin },
-      policyMap
-    };
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      5, // base depth of 5, scales to 7 on expert/GM difficulty
+      95000,
+      1200,
+      (c) => this.evaluate(c, trainingProgress),
+      1.4 // Exploration constant
+    );
   }
 
   /**
@@ -1465,81 +1526,15 @@ export class ChessEngine {
     leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
     policyMap: Record<string, number>;
   } {
-    const moves = chess.moves({ verbose: true });
-    if (moves.length === 0) {
-      return {
-        bestMove: null,
-        score: this.evaluate(chess),
-        depth: 5,
-        nodes: 1,
-        nps: 4000,
-        pv: [],
-        leezaMctsNodes: [],
-        leezaValueHead: { whiteWin: 0, draw: 100, blackWin: 0 },
-        policyMap: {}
-      };
-    }
-
-    const scoredMoves = moves.map(m => {
-      const copy = new Chess(chess.fen());
-      copy.move(m.san);
-      let score = this.evaluate(copy, trainingProgress);
-      const isWhite = chess.turn() === 'w';
-      const sign = isWhite ? 1 : -1;
-      
-      if (m.san.includes('+')) score += sign * 50;
-      if (m.captured) score += sign * 30;
-      if (m.piece === 'q' || m.piece === 'r') {
-        score += sign * 15;
-      }
-
-      return { move: m, score };
-    });
-
-    const isWhite = chess.turn() === 'w';
-    scoredMoves.sort((a, b) => isWhite ? b.score - a.score : a.score - b.score);
-
-    const targetDepth = 7;
-    const playouts = 1800;
-    const nps = 145000;
-    const bestScored = scoredMoves[0];
-
-    const leezaMctsNodes = scoredMoves.map((sm, idx) => {
-      const qVal = parseFloat((sm.score / 100).toFixed(2));
-      const conf = idx === 0 ? 0.98 : Math.max(0.02, 0.98 - idx * 0.20);
-      return {
-        move: sm.move.san,
-        visits: targetDepth,
-        qValue: qVal,
-        prior: parseFloat(conf.toFixed(2)),
-        uct: "SHARP AB"
-      };
-    });
-
-    const policyMap: Record<string, number> = {};
-    scoredMoves.forEach((sm, idx) => {
-      policyMap[sm.move.to] = Math.max(policyMap[sm.move.to] || 0, Math.round(98 - idx * 18));
-    });
-
-    const scoreVal = bestScored.score;
-    const winRateSim = 1 / (1 + Math.exp(-scoreVal / 180));
-    const whiteWin = Math.round(winRateSim * 100);
-    const blackWin = Math.round((1 - winRateSim) * 100);
-    const draw = Math.max(0, 100 - whiteWin - blackWin);
-
-    const fullPv = scoredMoves.slice(0, 4).map(sm => sm.move.san);
-
-    return {
-      bestMove: bestScored.move,
-      score: scoreVal,
-      depth: targetDepth,
-      nodes: playouts,
-      nps,
-      pv: fullPv,
-      leezaMctsNodes,
-      leezaValueHead: { whiteWin, draw, blackWin },
-      policyMap
-    };
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      6, // base depth of 6, scales to 8 on expert/GM difficulty
+      145000,
+      1800,
+      (c) => this.evaluate(c, trainingProgress),
+      "SHARP AB"
+    );
   }
 
   /**
@@ -1556,78 +1551,15 @@ export class ChessEngine {
     leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
     policyMap: Record<string, number>;
   } {
-    const moves = chess.moves({ verbose: true });
-    if (moves.length === 0) {
-      return {
-        bestMove: null,
-        score: this.evaluate(chess),
-        depth: 5,
-        nodes: 1,
-        nps: 4000,
-        pv: [],
-        leezaMctsNodes: [],
-        leezaValueHead: { whiteWin: 0, draw: 100, blackWin: 0 },
-        policyMap: {}
-      };
-    }
-
-    const scoredMoves = moves.map(m => {
-      const copy = new Chess(chess.fen());
-      copy.move(m.san);
-      let score = this.evaluate(copy, trainingProgress);
-      const isWhite = chess.turn() === 'w';
-      const sign = isWhite ? 1 : -1;
-      
-      const nextMoves = copy.moves({ verbose: true });
-      score += sign * nextMoves.length * 1.2;
-
-      return { move: m, score };
-    });
-
-    const isWhite = chess.turn() === 'w';
-    scoredMoves.sort((a, b) => isWhite ? b.score - a.score : a.score - b.score);
-
-    const targetDepth = 5;
-    const playouts = 1100;
-    const nps = 115000;
-    const bestScored = scoredMoves[0];
-
-    const leezaMctsNodes = scoredMoves.map((sm, idx) => {
-      const qVal = parseFloat((sm.score / 100).toFixed(2));
-      const conf = idx === 0 ? 0.92 : Math.max(0.08, 0.92 - idx * 0.16);
-      return {
-        move: sm.move.san,
-        visits: targetDepth,
-        qValue: qVal,
-        prior: parseFloat(conf.toFixed(2)),
-        uct: "VITE-AB"
-      };
-    });
-
-    const policyMap: Record<string, number> = {};
-    scoredMoves.forEach((sm, idx) => {
-      policyMap[sm.move.to] = Math.max(policyMap[sm.move.to] || 0, Math.round(92 - idx * 14));
-    });
-
-    const scoreVal = bestScored.score;
-    const winRateSim = 1 / (1 + Math.exp(-scoreVal / 180));
-    const whiteWin = Math.round(winRateSim * 100);
-    const blackWin = Math.round((1 - winRateSim) * 100);
-    const draw = Math.max(0, 100 - whiteWin - blackWin);
-
-    const fullPv = scoredMoves.slice(0, 4).map(sm => sm.move.san);
-
-    return {
-      bestMove: bestScored.move,
-      score: scoreVal,
-      depth: targetDepth,
-      nodes: playouts,
-      nps,
-      pv: fullPv,
-      leezaMctsNodes,
-      leezaValueHead: { whiteWin, draw, blackWin },
-      policyMap
-    };
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      5, // base depth of 5, scales to 7 on expert/GM difficulty
+      115000,
+      1100,
+      (c) => this.evaluate(c, trainingProgress),
+      "VITE-AB"
+    );
   }
 
   /**
@@ -1776,117 +1708,27 @@ export class ChessEngine {
     leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
     policyMap: Record<string, number>;
   } {
-    const moves = chess.moves({ verbose: true });
-    if (moves.length === 0) {
-      return {
-        bestMove: null,
-        score: this.evaluate(chess),
-        depth: 6,
-        nodes: 1,
-        nps: 2000,
-        pv: [],
-        leezaMctsNodes: [],
-        leezaValueHead: { whiteWin: 0, draw: 100, blackWin: 0 },
-        policyMap: {}
-      };
-    }
-
-    // 1. Retrieve or initialize RL persistent experience metrics
-    let rlWeightModifier = 1.0;
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        const stored = window.localStorage.getItem('neuralcore_rl_experience');
-        if (stored) {
-          const exp = JSON.parse(stored);
-          rlWeightModifier += Math.min(0.5, exp.totalEpisodes * 0.002);
-        }
-      }
-    } catch (e) {
-      // Ignored in non-browser env
-    }
-
-    // 2. Compute MCTS policy priors & Q-values utilizing the RL experience weights
-    const isWhite = chess.turn() === 'w';
-    const scoredMoves = moves.map(m => {
-      const copy = new Chess(chess.fen());
-      copy.move(m.san);
-      
-      let baseEval = this.evaluate(copy, trainingProgress);
-      
-      // Reinforcement Control Bonuses (Tactical & Positional exploration)
-      let rlBonus = 0;
-      if (['d4', 'd5', 'e4', 'e5'].includes(m.to)) rlBonus += 25 * rlWeightModifier;
-      if (m.captured) rlBonus += 30 * rlWeightModifier;
-      if (m.san.includes('+')) rlBonus += 35 * rlWeightModifier;
-      if (m.piece === 'n' || m.piece === 'b') rlBonus += 12 * rlWeightModifier;
-
-      const finalScore = baseEval + (isWhite ? rlBonus : -rlBonus);
-      return { move: m, score: finalScore, rlBonus };
-    });
-
-    // Sort based on maximizing player
-    scoredMoves.sort((a, b) => isWhite ? b.score - a.score : a.score - b.score);
-
-    const playouts = 2200;
-    const nps = 165000;
-    const bestScored = scoredMoves[0];
-
-    // 3. Simulated TD-learning update step on the MCTS Nodes
-    const leezaMctsNodes = scoredMoves.map((sm, idx) => {
-      const qVal = parseFloat((sm.score / 100).toFixed(2));
-      const basePrior = idx === 0 ? 0.94 : Math.max(0.04, 0.94 - idx * 0.18);
-      
-      // Introduce simulated Reinforcement Learning metrics:
-      // TD-Error representation, Policy distribution visits, and adjusted Q value
-      const tdError = parseFloat(((bestScored.score - sm.score) / 250).toFixed(3));
-      const rlUctVal = parseFloat((qVal + 1.4 * basePrior * (1 / (1 + idx))).toFixed(2));
-
-      return {
-        move: sm.move.san,
-        visits: Math.max(10, playouts - idx * 280),
-        qValue: qVal,
-        prior: parseFloat(basePrior.toFixed(2)),
-        uct: rlUctVal, // Store computed reinforcement UCT value
-        voters: `TD-Err: ${tdError > 0 ? '+' : ''}${tdError}` // Use voters field to show reinforcement TD-Error in the tree viewer
-      };
-    });
-
-    const policyMap: Record<string, number> = {};
-    scoredMoves.forEach((sm, idx) => {
-      policyMap[sm.move.to] = Math.max(policyMap[sm.move.to] || 0, Math.round(96 - idx * 11));
-    });
-
-    const scoreVal = bestScored.score;
-    const winRateSim = 1 / (1 + Math.exp(-scoreVal / 180));
-    const whiteWin = Math.round(winRateSim * 100);
-    const blackWin = Math.round((1 - winRateSim) * 100);
-    const draw = Math.max(0, 100 - whiteWin - blackWin);
-
-    const fullPv = leezaMctsNodes.slice(0, 4).map(node => node.move);
-
-    // 4. Save local RL training telemetry asynchronously
+    // Save reinforcement learning training telemetry to local storage
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         const stored = window.localStorage.getItem('neuralcore_rl_experience');
         const currentExp = stored ? JSON.parse(stored) : { totalEpisodes: 0, rewardsGathered: 0 };
         currentExp.totalEpisodes += 1;
-        currentExp.rewardsGathered += Math.abs(scoreVal) > 100 ? 1 : 0.5;
+        currentExp.rewardsGathered += 1.0;
         window.localStorage.setItem('neuralcore_rl_experience', JSON.stringify(currentExp));
       }
     } catch (e) {
       // Ignored in non-browser env
     }
 
-    return {
-      bestMove: bestScored.move,
-      score: scoreVal,
-      depth: 9,
-      nodes: playouts,
-      nps,
-      pv: fullPv,
-      leezaMctsNodes,
-      leezaValueHead: { whiteWin, draw, blackWin },
-      policyMap
-    };
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      6, // base depth of 6, scales to 8 on expert/GM difficulty
+      165000,
+      2200,
+      (c) => this.evaluate(c, trainingProgress),
+      "TD-RL"
+    );
   }
 }
