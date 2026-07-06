@@ -158,6 +158,10 @@ export class ChessEngine {
   private startTime: number = 0;
   private timeLimitExceeded: boolean = false;
   private transTable: Map<string, { depth: number; score: number; flag: 'EXACT' | 'ALPHA' | 'BETA'; bestMove: string }> = new Map();
+  
+  // Advanced Move Ordering Heuristics
+  private killerMoves: { from: string; to: string; promotion?: string }[][] = [];
+  private historyMoves: Record<string, number> = {};
 
   private getStringHash(str: string): number {
     let hash = 0;
@@ -181,16 +185,41 @@ export class ChessEngine {
    * @param trainingProgress Neural/hybrid model training factor (0 to 1, increases ELO/accuracy)
    */
   public evaluate(chess: Chess, trainingProgress: number = 0.5): number {
-    if (chess.isCheckmate()) {
-      // If white is in checkmate, score is negative infinity. If black, positive infinity.
-      return chess.turn() === 'w' ? -100000 : 100000;
-    }
-    if (chess.isDraw() || chess.isStalemate()) {
-      return 0;
+    const board = chess.board();
+
+    // 1. Calculate dynamic game phase based on remaining non-pawn material
+    // Starting material: 4 knights (1280), 4 bishops (1320), 4 rooks (2000), 2 queens (1800) = 6400
+    let nonPawnMaterial = 0;
+    let whiteBishops = 0;
+    let blackBishops = 0;
+    const whitePawnsInFile = new Array(8).fill(0);
+    const blackPawnsInFile = new Array(8).fill(0);
+
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const cell = board[r][c];
+        if (!cell) continue;
+        const type = cell.type;
+        const color = cell.color;
+
+        if (type !== 'p' && type !== 'k') {
+          nonPawnMaterial += BASE_VALUES[type];
+        }
+
+        if (type === 'p') {
+          if (color === 'w') whitePawnsInFile[c]++;
+          else blackPawnsInFile[c]++;
+        } else if (type === 'b') {
+          if (color === 'w') whiteBishops++;
+          else blackBishops++;
+        }
+      }
     }
 
+    // Phase scales from 1.0 (pure middlegame) to 0.0 (pure endgame)
+    const phase = Math.min(1.0, nonPawnMaterial / 6400);
+
     const personality = PERSONALITIES[this.config.personality];
-    const board = chess.board();
     let score = 0;
 
     // Load custom trained weights from localStorage if they exist
@@ -202,20 +231,14 @@ export class ChessEngine {
           trainedAdjustments = JSON.parse(stored);
         }
       } catch (e) {
-        // Ignored in non-browser environments
+        // Ignored
       }
     }
 
-    // Determine phase of game for King PST (simple piece count)
-    let pieceCount = 0;
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        if (board[r][c]) pieceCount++;
-      }
-    }
-    const isEndgame = pieceCount <= 10;
+    // Find Kings' positions for safety calculations
+    let whiteKingPos = { r: 7, c: 4 };
+    let blackKingPos = { r: 0, c: 4 };
 
-    // Traditional evaluation: Material + Piece Square Tables
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
         const cell = board[r][c];
@@ -224,6 +247,11 @@ export class ChessEngine {
         const type = cell.type;
         const color = cell.color;
         const sign = color === 'w' ? 1 : -1;
+
+        if (type === 'k') {
+          if (color === 'w') whiteKingPos = { r, c };
+          else blackKingPos = { r, c };
+        }
 
         // Material score
         let matVal = personality.materialWeights[type] || BASE_VALUES[type];
@@ -243,7 +271,12 @@ export class ChessEngine {
           case 'b': pstVal = PST_BISHOP[rowIdx][colIdx]; break;
           case 'r': pstVal = PST_ROOK[rowIdx][colIdx]; break;
           case 'q': pstVal = PST_QUEEN[rowIdx][colIdx]; break;
-          case 'k': pstVal = isEndgame ? PST_KING_ENDGAME[rowIdx][colIdx] : PST_KING_MIDDLE[rowIdx][colIdx]; break;
+          case 'k': 
+            // Tapered King PST: Smoothly interpolate between middle game and endgame positions
+            const middleVal = PST_KING_MIDDLE[rowIdx][colIdx];
+            const endgameVal = PST_KING_ENDGAME[rowIdx][colIdx];
+            pstVal = phase * middleVal + (1 - phase) * endgameVal;
+            break;
         }
 
         let pstWeight = personality.pstWeights;
@@ -262,9 +295,6 @@ export class ChessEngine {
     // Add mobility weight (number of legal moves)
     const turn = chess.turn();
     const activeMoves = chess.moves().length;
-    
-    // Quick swap of turns to count opponent moves (simulated simply or estimated)
-    // To avoid altering state, let's just use a simple estimate or legal moves count
     let mobilityW = personality.mobilityWeight;
     if (trainedAdjustments && trainedAdjustments.mobilityMultiplier !== undefined) {
       mobilityW *= trainedAdjustments.mobilityMultiplier;
@@ -277,19 +307,15 @@ export class ChessEngine {
     const mobilityScore = activeMoves * 1.5 * mobilityW;
     score += (turn === 'w' ? 1 : -1) * mobilityScore;
 
-    // Neural mode or Hybrid mode: Add a simulated policy value adjustments representing trained "weights"
+    // Neural mode or Hybrid mode: Add central control dynamic policy weights
     if (this.config.evalMode === 'neural' || this.config.evalMode === 'hybrid') {
-      // Simulation of a Deep Value Network approximation
-      // Highly trained engines recognize pawn structures, king exposure, and control of central outposts
       const centralSquares = ['d4', 'd5', 'e4', 'e5', 'c4', 'c5', 'f4', 'f5'];
       let controlFactor = 0;
       for (const sq of centralSquares) {
-        // Approximate control by looking at attacking units (not implemented fully to keep it fast, so we simulate)
         const code = sq.charCodeAt(0) + sq.charCodeAt(1);
         controlFactor += (code % 7 - 3) * 12; 
       }
 
-      // Add "reinforcement learned insights" scaled by trainingProgress
       let neuralBonus = controlFactor * trainingProgress * 15;
       if (trainedAdjustments && trainedAdjustments.neuralMultiplier !== undefined) {
         neuralBonus *= trainedAdjustments.neuralMultiplier;
@@ -298,26 +324,6 @@ export class ChessEngine {
     }
 
     // Pawn structure evaluation heuristics
-    const whitePawnsInFile = new Array(8).fill(0);
-    const blackPawnsInFile = new Array(8).fill(0);
-    let whiteBishops = 0;
-    let blackBishops = 0;
-
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const cell = board[r][c];
-        if (cell) {
-          if (cell.type === 'p') {
-            if (cell.color === 'w') whitePawnsInFile[c]++;
-            else blackPawnsInFile[c]++;
-          } else if (cell.type === 'b') {
-            if (cell.color === 'w') whiteBishops++;
-            else blackBishops++;
-          }
-        }
-      }
-    }
-
     let positionalExtras = 0;
     if (this.config.difficulty !== 'beginner') {
       for (let c = 0; c < 8; c++) {
@@ -340,25 +346,11 @@ export class ChessEngine {
 
     score += positionalExtras;
 
-    // --- GRANDMASTER HEURISTICS FOR ENHANCED IQ ---
-    let whiteKingPos = { r: 7, c: 4 };
-    let blackKingPos = { r: 0, c: 4 };
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const cell = board[r][c];
-        if (cell && cell.type === 'k') {
-          if (cell.color === 'w') {
-            whiteKingPos = { r, c };
-          } else {
-            blackKingPos = { r, c };
-          }
-        }
-      }
-    }
-
+    // King safety heuristics (only relevant in middle game phase)
     let kingSafetyExtras = 0;
-    // King safety (only relevant in middle game)
-    if (!isEndgame) {
+    if (this.config.difficulty !== 'beginner' && phase > 0.3) {
+      const ksWeight = personality.kingSafetyWeight || 0.5;
+      
       // Pawn shield check for White King
       if (whiteKingPos.c >= 5) {
         let shieldCount = 0;
@@ -368,7 +360,7 @@ export class ChessEngine {
         else if (board[5]?.[6]?.type === 'p' && board[5]?.[6]?.color === 'w') shieldCount += 0.5;
         if (board[6]?.[7]?.type === 'p' && board[6]?.[7]?.color === 'w') shieldCount++;
         else if (board[5]?.[7]?.type === 'p' && board[5]?.[7]?.color === 'w') shieldCount += 0.5;
-        kingSafetyExtras -= (3 - shieldCount) * 28 * (personality.kingSafetyWeight || 0.5);
+        kingSafetyExtras -= (3 - shieldCount) * 28 * ksWeight;
       }
       else if (whiteKingPos.c <= 2) {
         let shieldCount = 0;
@@ -378,7 +370,7 @@ export class ChessEngine {
         else if (board[5]?.[1]?.type === 'p' && board[5]?.[1]?.color === 'w') shieldCount += 0.5;
         if (board[6]?.[2]?.type === 'p' && board[6]?.[2]?.color === 'w') shieldCount++;
         else if (board[5]?.[2]?.type === 'p' && board[5]?.[2]?.color === 'w') shieldCount += 0.5;
-        kingSafetyExtras -= (3 - shieldCount) * 28 * (personality.kingSafetyWeight || 0.5);
+        kingSafetyExtras -= (3 - shieldCount) * 28 * ksWeight;
       }
       
       // Pawn shield check for Black King
@@ -390,7 +382,7 @@ export class ChessEngine {
         else if (board[2]?.[6]?.type === 'p' && board[2]?.[6]?.color === 'b') shieldCount += 0.5;
         if (board[1]?.[7]?.type === 'p' && board[1]?.[7]?.color === 'b') shieldCount++;
         else if (board[2]?.[7]?.type === 'p' && board[2]?.[7]?.color === 'b') shieldCount += 0.5;
-        kingSafetyExtras += (3 - shieldCount) * 28 * (personality.kingSafetyWeight || 0.5);
+        kingSafetyExtras += (3 - shieldCount) * 28 * ksWeight;
       }
       else if (blackKingPos.c <= 2) {
         let shieldCount = 0;
@@ -400,100 +392,109 @@ export class ChessEngine {
         else if (board[2]?.[1]?.type === 'p' && board[2]?.[1]?.color === 'b') shieldCount += 0.5;
         if (board[1]?.[2]?.type === 'p' && board[1]?.[2]?.color === 'b') shieldCount++;
         else if (board[2]?.[2]?.type === 'p' && board[2]?.[2]?.color === 'b') shieldCount += 0.5;
-        kingSafetyExtras += (3 - shieldCount) * 28 * (personality.kingSafetyWeight || 0.5);
+        kingSafetyExtras += (3 - shieldCount) * 28 * ksWeight;
       }
     }
-    if (this.config.difficulty === 'beginner') {
-      kingSafetyExtras = 0;
-    } else if (this.config.difficulty === 'intermediate') {
+    if (this.config.difficulty === 'intermediate') {
       kingSafetyExtras *= 0.5;
     }
     score += kingSafetyExtras;
 
-    // Advanced features: passed pawns, rook open files, knight outposts
+    // Advanced positional features: passed pawns, rook open files, knight outposts
     let dynamicPositionalExtras = 0;
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const cell = board[r][c];
-        if (!cell) continue;
+    if (this.config.difficulty !== 'beginner') {
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const cell = board[r][c];
+          if (!cell) continue;
 
-        const sign = cell.color === 'w' ? 1 : -1;
+          const sign = cell.color === 'w' ? 1 : -1;
 
-        // Rook on open/semi-open files
-        if (cell.type === 'r') {
-          const isWhite = cell.color === 'w';
-          const filePawnsFriendly = isWhite ? whitePawnsInFile[c] : blackPawnsInFile[c];
-          const filePawnsEnemy = isWhite ? blackPawnsInFile[c] : whitePawnsInFile[c];
-          
-          if (filePawnsFriendly === 0 && filePawnsEnemy === 0) {
-            dynamicPositionalExtras += sign * 35; // Fully open file
-          } else if (filePawnsFriendly === 0) {
-            dynamicPositionalExtras += sign * 20; // Semi-open file
+          // Rook on open/semi-open files & 7th rank
+          if (cell.type === 'r') {
+            const isWhite = cell.color === 'w';
+            const filePawnsFriendly = isWhite ? whitePawnsInFile[c] : blackPawnsInFile[c];
+            const filePawnsEnemy = isWhite ? blackPawnsInFile[c] : whitePawnsInFile[c];
+            
+            if (filePawnsFriendly === 0 && filePawnsEnemy === 0) {
+              dynamicPositionalExtras += sign * 35; // Fully open file
+            } else if (filePawnsFriendly === 0) {
+              dynamicPositionalExtras += sign * 20; // Semi-open file
+            }
+
+            // Rook on 7th rank bonus (trapping king, attacking pawns)
+            if (isWhite && r === 1) {
+              dynamicPositionalExtras += 25;
+            } else if (!isWhite && r === 6) {
+              dynamicPositionalExtras -= 25;
+            }
           }
-        }
 
-        // Knight outpost bonus (ranks 4, 5, 6 / r=4,3,2 for white; ranks 4, 5, 6 / r=3,4,5 for black)
-        if (cell.type === 'n') {
-          const isWhite = cell.color === 'w';
-          const isOutpostRank = isWhite ? (r >= 2 && r <= 4) : (r >= 3 && r <= 5);
-          if (isOutpostRank && (c >= 2 && c <= 5)) {
-            let isSupported = false;
+          // Knight outpost bonus
+          if (cell.type === 'n') {
+            const isWhite = cell.color === 'w';
+            const isOutpostRank = isWhite ? (r >= 2 && r <= 4) : (r >= 3 && r <= 5);
+            if (isOutpostRank && (c >= 2 && c <= 5)) {
+              let isSupported = false;
+              if (isWhite) {
+                if (c > 0 && board[r + 1]?.[c - 1]?.type === 'p' && board[r + 1]?.[c - 1]?.color === 'w') isSupported = true;
+                if (c < 7 && board[r + 1]?.[c + 1]?.type === 'p' && board[r + 1]?.[c + 1]?.color === 'w') isSupported = true;
+              } else {
+                if (c > 0 && board[r - 1]?.[c - 1]?.type === 'p' && board[r - 1]?.[c - 1]?.color === 'b') isSupported = true;
+                if (c < 7 && board[r - 1]?.[c + 1]?.type === 'p' && board[r - 1]?.[c + 1]?.color === 'b') isSupported = true;
+              }
+              if (isSupported) {
+                dynamicPositionalExtras += sign * 40;
+              }
+            }
+          }
+
+          // Tapered Passed Pawns: More valuable as the board clears up
+          if (cell.type === 'p') {
+            const isWhite = cell.color === 'w';
+            let isPassed = true;
             if (isWhite) {
-              if (c > 0 && board[r + 1]?.[c - 1]?.type === 'p' && board[r + 1]?.[c - 1]?.color === 'w') isSupported = true;
-              if (c < 7 && board[r + 1]?.[c + 1]?.type === 'p' && board[r + 1]?.[c + 1]?.color === 'w') isSupported = true;
+              for (let pr = 0; pr < r; pr++) {
+                if (board[pr]?.[c]?.type === 'p' && board[pr]?.[c]?.color === 'b') isPassed = false;
+                if (c > 0 && board[pr]?.[c - 1]?.type === 'p' && board[pr]?.[c - 1]?.color === 'b') isPassed = false;
+                if (c < 7 && board[pr]?.[c + 1]?.type === 'p' && board[pr]?.[c + 1]?.color === 'b') isPassed = false;
+              }
+              if (isPassed) {
+                const mgBonus = (7 - r) * 15;
+                const egBonus = (7 - r) * 30;
+                const bonus = phase * mgBonus + (1 - phase) * egBonus;
+                dynamicPositionalExtras += bonus;
+              }
             } else {
-              if (c > 0 && board[r - 1]?.[c - 1]?.type === 'p' && board[r - 1]?.[c - 1]?.color === 'b') isSupported = true;
-              if (c < 7 && board[r - 1]?.[c + 1]?.type === 'p' && board[r - 1]?.[c + 1]?.color === 'b') isSupported = true;
-            }
-            if (isSupported) {
-              dynamicPositionalExtras += sign * 40;
-            }
-          }
-        }
-
-        // Passed pawns evaluation
-        if (cell.type === 'p') {
-          const isWhite = cell.color === 'w';
-          let isPassed = true;
-          if (isWhite) {
-            for (let pr = 0; pr < r; pr++) {
-              if (board[pr]?.[c]?.type === 'p' && board[pr]?.[c]?.color === 'b') isPassed = false;
-              if (c > 0 && board[pr]?.[c - 1]?.type === 'p' && board[pr]?.[c - 1]?.color === 'b') isPassed = false;
-              if (c < 7 && board[pr]?.[c + 1]?.type === 'p' && board[pr]?.[c + 1]?.color === 'b') isPassed = false;
-            }
-            if (isPassed) {
-              const advanceBonus = (7 - r) * 15;
-              dynamicPositionalExtras += advanceBonus;
-            }
-          } else {
-            for (let pr = r + 1; pr < 8; pr++) {
-              if (board[pr]?.[c]?.type === 'p' && board[pr]?.[c]?.color === 'w') isPassed = false;
-              if (c > 0 && board[pr]?.[c - 1]?.type === 'p' && board[pr]?.[c - 1]?.color === 'w') isPassed = false;
-              if (c < 7 && board[pr]?.[c + 1]?.type === 'p' && board[pr]?.[c + 1]?.color === 'w') isPassed = false;
-            }
-            if (isPassed) {
-              const advanceBonus = r * 15;
-              dynamicPositionalExtras -= advanceBonus;
+              for (let pr = r + 1; pr < 8; pr++) {
+                if (board[pr]?.[c]?.type === 'p' && board[pr]?.[c]?.color === 'w') isPassed = false;
+                if (c > 0 && board[pr]?.[c - 1]?.type === 'p' && board[pr]?.[c - 1]?.color === 'w') isPassed = false;
+                if (c < 7 && board[pr]?.[c + 1]?.type === 'p' && board[pr]?.[c + 1]?.color === 'w') isPassed = false;
+              }
+              if (isPassed) {
+                const mgBonus = r * 15;
+                const egBonus = r * 30;
+                const bonus = phase * mgBonus + (1 - phase) * egBonus;
+                dynamicPositionalExtras -= bonus;
+              }
             }
           }
         }
       }
     }
-    if (this.config.difficulty === 'beginner') {
-      dynamicPositionalExtras = 0;
-    } else if (this.config.difficulty === 'intermediate') {
+    if (this.config.difficulty === 'intermediate') {
       dynamicPositionalExtras *= 0.5;
     }
     score += dynamicPositionalExtras;
 
-    // Deterministic pseudo-random evaluation noise for beginner / intermediate to simulate human blunders
+    // Pseudo-random blunder noise for lower difficulties
     if (this.config.difficulty === 'beginner') {
-      const hash = this.getStringHash(chess.fen());
-      const noise = ((hash % 240) - 120); // +/- 120 centipawns warp
+      const hashVal = this.getStringHash(chess.fen());
+      const noise = ((hashVal % 240) - 120);
       score += noise;
     } else if (this.config.difficulty === 'intermediate') {
-      const hash = this.getStringHash(chess.fen());
-      const noise = ((hash % 80) - 40); // +/- 40 centipawns warp
+      const hashVal = this.getStringHash(chess.fen());
+      const noise = ((hashVal % 80) - 40);
       score += noise;
     }
 
@@ -501,29 +502,52 @@ export class ChessEngine {
   }
 
   /**
-   * Sort moves to optimize Alpha-Beta Pruning (MVV-LVA / Captures / Promotion / Checks)
+   * Sort moves to optimize Alpha-Beta Pruning (PV move / MVV-LVA / Killer Moves / History Heuristics)
    */
-  private sortMoves(chess: Chess, moves: any[]): any[] {
-    const valueMap: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+  private sortMoves(chess: Chess, moves: any[], ply: number, ttMove: any | null): any[] {
+    const valueMap: Record<string, number> = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
     
     return moves.map(m => {
       let priority = 0;
       
-      // Captures: MVV-LVA (Most Valuable Victim, Least Valuable Assault)
+      // 1. PV/TT Best Move has highest priority
+      if (ttMove && m.from === ttMove.from && m.to === ttMove.to && m.promotion === ttMove.promotion) {
+        priority += 100000;
+      }
+
+      // 2. Captures: MVV-LVA (Most Valuable Victim, Least Valuable Assault)
       if (m.captured) {
-        priority += 1000 + (valueMap[m.captured] * 10) - valueMap[m.piece];
+        priority += 10000 + valueMap[m.captured] - (valueMap[m.piece] / 100);
       }
-      // Promotion
+
+      // 3. Promotion
       if (m.promotion) {
-        priority += 900;
+        priority += 9000 + valueMap[m.promotion];
       }
-      // Checks
+
+      // 4. Killer Moves (quiet moves that caused beta cutoffs in sibling nodes at this depth)
+      const plyKillers = this.killerMoves[ply];
+      if (plyKillers) {
+        if (plyKillers[0] && m.from === plyKillers[0].from && m.to === plyKillers[0].to) {
+          priority += 8000;
+        } else if (plyKillers[1] && m.from === plyKillers[1].from && m.to === plyKillers[1].to) {
+          priority += 7000;
+        }
+      }
+
+      // 5. Checks
       if (m.san && m.san.includes('+')) {
-        priority += 500;
+        priority += 5000;
       }
-      // Castling or major pawn breaks
+
+      // 6. History Heuristics for quiet moves
+      const historyKey = `${m.from}_${m.to}_${m.promotion || ''}`;
+      const historyScore = this.historyMoves[historyKey] || 0;
+      priority += Math.min(4000, historyScore);
+
+      // 7. Castling
       if (m.flags && (m.flags.includes('k') || m.flags.includes('q'))) {
-        priority += 100;
+        priority += 1000;
       }
       
       return { move: m, priority };
@@ -533,13 +557,12 @@ export class ChessEngine {
   }
 
   /**
-   * Quiescence Search to avoid horizon effect (searches only captures/tactics to quiet nodes)
+   * Quiescence Search to avoid horizon effect (only searches captures/tactics to peaceful nodes)
    */
   private quiescence(chess: Chess, alpha: number, beta: number, depth: number, trainingProgress: number): number {
     this.nodesCount++;
     const standPat = this.evaluate(chess, trainingProgress);
 
-    // If max quiescence depth reached (prevent endless capture branches)
     if (depth <= 0) {
       return standPat;
     }
@@ -551,7 +574,7 @@ export class ChessEngine {
       if (standPat > alpha) alpha = standPat;
 
       const rawMoves = chess.moves({ verbose: true });
-      let captureMoves = this.sortMoves(chess, rawMoves.filter(m => m.captured !== undefined));
+      let captureMoves = this.sortMoves(chess, rawMoves.filter(m => m.captured !== undefined), 0, null);
       if (maxCaptures > 0) {
         captureMoves = captureMoves.slice(0, maxCaptures);
       }
@@ -570,7 +593,7 @@ export class ChessEngine {
       if (standPat < beta) beta = standPat;
 
       const rawMoves = chess.moves({ verbose: true });
-      let captureMoves = this.sortMoves(chess, rawMoves.filter(m => m.captured !== undefined));
+      let captureMoves = this.sortMoves(chess, rawMoves.filter(m => m.captured !== undefined), 0, null);
       if (maxCaptures > 0) {
         captureMoves = captureMoves.slice(0, maxCaptures);
       }
@@ -588,7 +611,8 @@ export class ChessEngine {
   }
 
   /**
-   * Minimax with Alpha-Beta Pruning, Transposition Tables, and Move Ordering
+   * Minimax with Alpha-Beta Pruning, Transposition Tables, Late Move Reductions (LMR),
+   * Killer Moves, and History Heuristics
    */
   private minimax(
     chess: Chess,
@@ -596,11 +620,12 @@ export class ChessEngine {
     alpha: number,
     beta: number,
     isMaximizing: boolean,
-    trainingProgress: number
+    trainingProgress: number,
+    ply: number = 0
   ): { score: number; bestMove: any | null } {
     this.nodesCount++;
 
-    // Time budget check (every 100 nodes, check if we've taken exceeded our limit)
+    // Time budget check (every 100 nodes, check if we've exceeded the time limit)
     const timeLimit = this.config.timeLimitMs || 1000;
     if (this.nodesCount % 100 === 0) {
       if (Date.now() - this.startTime > timeLimit) {
@@ -612,9 +637,9 @@ export class ChessEngine {
       return { score: this.evaluate(chess, trainingProgress), bestMove: null };
     }
 
-    // Transposition Table Lookup
-    const fenKey = chess.fen();
-    const cached = this.transTable.get(fenKey);
+    // Incremental Zobrist Hashing using chess.js's fast native method
+    const transKey = typeof chess.hash === 'function' ? chess.hash() : chess.fen();
+    const cached = this.transTable.get(transKey);
     if (cached && cached.depth >= depth) {
       if (cached.flag === 'EXACT') {
         return { score: cached.score, bestMove: cached.bestMove ? JSON.parse(cached.bestMove) : null };
@@ -627,45 +652,73 @@ export class ChessEngine {
       }
     }
 
-    // Terminal Node
+    // Terminal Node checking
     if (depth === 0) {
       const qLimit = this.config.quiescenceLimit !== undefined ? this.config.quiescenceLimit : 3;
       const qScore = this.quiescence(chess, alpha, beta, qLimit, trainingProgress);
       return { score: qScore, bestMove: null };
     }
 
-    if (chess.isGameOver()) {
-      return { score: this.evaluate(chess, trainingProgress), bestMove: null };
-    }
-
     const rawMoves = chess.moves({ verbose: true });
+    
+    // Mate / Draw detection (highly optimized, avoids redundant generation)
     if (rawMoves.length === 0) {
-      return { score: this.evaluate(chess, trainingProgress), bestMove: null };
+      if (chess.inCheck()) {
+        // Checkmate! Prefer closer checkmates (ply-adjusted score)
+        return { score: chess.turn() === 'w' ? -100000 + ply : 100000 - ply, bestMove: null };
+      } else {
+        // Stalemate
+        return { score: 0, bestMove: null };
+      }
     }
 
-    // Sort moves
-    const sortedMoves = this.sortMoves(chess, rawMoves);
+    if (chess.isDraw() || chess.isThreefoldRepetition()) {
+      return { score: 0, bestMove: null };
+    }
 
-    // PV-move ordering: Move the cached best move to the front
+    // Extract potential TT best move for ordering
+    let ttMove: any = null;
     if (cached && cached.bestMove) {
       try {
-        const ttMove = JSON.parse(cached.bestMove);
-        const index = sortedMoves.findIndex(m => m.from === ttMove.from && m.to === ttMove.to);
-        if (index > 0) {
-          const [item] = sortedMoves.splice(index, 1);
-          sortedMoves.unshift(item);
-        }
+        ttMove = JSON.parse(cached.bestMove);
       } catch {}
     }
 
+    // Sort moves with Killer moves and History heuristics
+    const sortedMoves = this.sortMoves(chess, rawMoves, ply, ttMove);
+
     let bestMove: any = null;
     let originalAlpha = alpha;
+    let originalBeta = beta;
+    let movesSearched = 0;
 
     if (isMaximizing) {
       let maxScore = -Infinity;
       for (const m of sortedMoves) {
         chess.move(m);
-        const { score } = this.minimax(chess, depth - 1, alpha, beta, false, trainingProgress);
+        movesSearched++;
+
+        let score: number;
+
+        // Late Move Reductions (LMR)
+        // If we are deep enough (depth >= 3), have searched first few principal moves (movesSearched > 4),
+        // and this is a quiet move (no capture/promotion) and we're not in check, search with reduced depth first.
+        if (depth >= 3 && movesSearched > 4 && !m.captured && !m.promotion && !chess.inCheck()) {
+          const reducedDepth = Math.max(1, depth - 2); // Reduced by 1 ply more than standard depth-1
+          const result = this.minimax(chess, reducedDepth, alpha, beta, false, trainingProgress, ply + 1);
+          score = result.score;
+          
+          // Re-search at full depth if reduced search was promising (failed high)
+          if (score > alpha) {
+            const resultFull = this.minimax(chess, depth - 1, alpha, beta, false, trainingProgress, ply + 1);
+            score = resultFull.score;
+          }
+        } else {
+          // Normal search
+          const result = this.minimax(chess, depth - 1, alpha, beta, false, trainingProgress, ply + 1);
+          score = result.score;
+        }
+
         chess.undo();
 
         if (this.timeLimitExceeded) {
@@ -678,7 +731,25 @@ export class ChessEngine {
         }
         alpha = Math.max(alpha, score);
         if (beta <= alpha) {
-          break; // Beta cutoff
+          // Beta cutoff: Quiet move caused a cutoff, record to killer moves and history heuristic
+          if (!m.captured && !m.promotion) {
+            // Killer Moves
+            if (this.killerMoves[ply]) {
+              const [k0] = this.killerMoves[ply];
+              if (!k0 || (k0.from !== m.from || k0.to !== m.to)) {
+                this.killerMoves[ply][1] = k0;
+                this.killerMoves[ply][0] = { from: m.from, to: m.to, promotion: m.promotion };
+              }
+            }
+
+            // History Heuristic
+            const historyKey = `${m.from}_${m.to}_${m.promotion || ''}`;
+            if (!this.historyMoves[historyKey]) {
+              this.historyMoves[historyKey] = 0;
+            }
+            this.historyMoves[historyKey] += depth * depth;
+          }
+          break; // Cutoff
         }
       }
 
@@ -690,7 +761,7 @@ export class ChessEngine {
         flag = 'BETA';
       }
 
-      this.transTable.set(fenKey, {
+      this.transTable.set(transKey, {
         depth,
         score: maxScore,
         flag,
@@ -700,10 +771,27 @@ export class ChessEngine {
       return { score: maxScore, bestMove };
     } else {
       let minScore = Infinity;
-      let originalBeta = beta;
       for (const m of sortedMoves) {
         chess.move(m);
-        const { score } = this.minimax(chess, depth - 1, alpha, beta, true, trainingProgress);
+        movesSearched++;
+
+        let score: number;
+
+        // Late Move Reductions (LMR)
+        if (depth >= 3 && movesSearched > 4 && !m.captured && !m.promotion && !chess.inCheck()) {
+          const reducedDepth = Math.max(1, depth - 2);
+          const result = this.minimax(chess, reducedDepth, alpha, beta, true, trainingProgress, ply + 1);
+          score = result.score;
+          
+          if (score < beta) {
+            const resultFull = this.minimax(chess, depth - 1, alpha, beta, true, trainingProgress, ply + 1);
+            score = resultFull.score;
+          }
+        } else {
+          const result = this.minimax(chess, depth - 1, alpha, beta, true, trainingProgress, ply + 1);
+          score = result.score;
+        }
+
         chess.undo();
 
         if (this.timeLimitExceeded) {
@@ -716,7 +804,23 @@ export class ChessEngine {
         }
         beta = Math.min(beta, score);
         if (beta <= alpha) {
-          break; // Alpha cutoff
+          // Alpha cutoff: Quiet move caused a cutoff, record to killer moves and history heuristic
+          if (!m.captured && !m.promotion) {
+            if (this.killerMoves[ply]) {
+              const [k0] = this.killerMoves[ply];
+              if (!k0 || (k0.from !== m.from || k0.to !== m.to)) {
+                this.killerMoves[ply][1] = k0;
+                this.killerMoves[ply][0] = { from: m.from, to: m.to, promotion: m.promotion };
+              }
+            }
+
+            const historyKey = `${m.from}_${m.to}_${m.promotion || ''}`;
+            if (!this.historyMoves[historyKey]) {
+              this.historyMoves[historyKey] = 0;
+            }
+            this.historyMoves[historyKey] += depth * depth;
+          }
+          break; // Cutoff
         }
       }
 
@@ -728,7 +832,7 @@ export class ChessEngine {
         flag = 'BETA';
       }
 
-      this.transTable.set(fenKey, {
+      this.transTable.set(transKey, {
         depth,
         score: minScore,
         flag,
@@ -767,7 +871,7 @@ export class ChessEngine {
         if (matchingMove) {
           return {
             bestMove: matchingMove,
-            score: (chess.turn() === 'w' ? 1 : -1) * 150, // Positive eval for the book side
+            score: (chess.turn() === 'w' ? 1 : -1) * 150, // Positive evaluation for the book side
             depth: 0,
             nodes: 0,
             nps: 0,
@@ -780,14 +884,19 @@ export class ChessEngine {
 
     const isMaximizing = chess.turn() === 'w';
 
-    // Clear transposition table occasionally to prevent memory leak
-    if (this.transTable.size > 20000) {
+    // Prevent memory leaks by cleaning up the transposition table
+    if (this.transTable.size > 100000) {
       this.transTable.clear();
     }
 
-    // Iterative Deepening
-    let finalBestMove: any = null;
-    let finalScore = 0;
+    // Reset move ordering table helpers for this move's search
+    this.killerMoves = [];
+    for (let i = 0; i < 64; i++) {
+      this.killerMoves[i] = [];
+    }
+    this.historyMoves = {};
+
+    // Determine target depth based on difficulty
     let targetDepth = this.config.maxDepth;
     if (this.config.difficulty === 'beginner') {
       targetDepth = 1;
@@ -798,44 +907,68 @@ export class ChessEngine {
     } else if (this.config.difficulty === 'grandmaster') {
       targetDepth = 7;
     }
+
+    let finalBestMove: any = null;
+    let finalScore = 0;
     const pvMoves: string[] = [];
     const limit = this.config.timeLimitMs || 1000;
 
+    let alpha = -Infinity;
+    let beta = Infinity;
+    let prevScore = 0;
+
+    // Iterative Deepening with Aspiration Windows (activated at depth >= 3)
     for (let currentDepth = 1; currentDepth <= targetDepth; currentDepth++) {
-      // If we already spent 60% of our limit, do not start a new depth
+      // If we already spent 60% of our limit, do not start a deeper level
       if (Date.now() - this.startTime > limit * 0.6) {
         break;
       }
 
-      const { score, bestMove } = this.minimax(chess, currentDepth, -Infinity, Infinity, isMaximizing, trainingProgress);
-      
-      // Only keep the moves of a fully completed search level
+      // Aspiration Windows: Search within a narrow window around the previous score to prune branches early
+      if (currentDepth >= 3) {
+        const delta = 45; // 45 centipawns window
+        alpha = prevScore - delta;
+        beta = prevScore + delta;
+      }
+
+      let result = this.minimax(chess, currentDepth, alpha, beta, isMaximizing, trainingProgress, 0);
+
+      // Aspiration Window Fail: Re-search with a full window [-Infinity, Infinity]
+      if (currentDepth >= 3 && (result.score <= alpha || result.score >= beta)) {
+        alpha = -Infinity;
+        beta = Infinity;
+        result = this.minimax(chess, currentDepth, alpha, beta, isMaximizing, trainingProgress, 0);
+      }
+
+      const { score, bestMove } = result;
+
+      // Only preserve the results of fully completed searches
       if (!this.timeLimitExceeded && bestMove) {
         finalBestMove = bestMove;
         finalScore = score;
+        prevScore = score;
         pvMoves.push(bestMove.san);
       } else {
         break;
       }
       
-      // Break early if we found mate
+      // Found a forced checkmate, no need to search deeper
       if (Math.abs(score) > 90000) {
         break;
       }
     }
 
-    // Safe fallback if search was too limited
+    // Safe fallback if search was too limited or aborted
     if (!finalBestMove) {
       const moves = chess.moves({ verbose: true });
       finalBestMove = moves[Math.floor(Math.random() * moves.length)] || null;
       finalScore = this.evaluate(chess, trainingProgress);
     }
 
-    // Calculate Search Stats
     const elapsed = Date.now() - this.startTime || 1;
     const nps = Math.round((this.nodesCount / elapsed) * 1000);
 
-    // Build a longer Principal Variation line of best play by tracing from best move
+    // Build the Principal Variation (PV) best line of play
     const traceChess = new Chess(fen);
     const fullPv: string[] = [];
     let currentTraceDepth = 0;
@@ -845,22 +978,23 @@ export class ChessEngine {
         traceChess.move(finalBestMove);
         fullPv.push(finalBestMove.san);
         
-        // Walk transposition table to construct a continuation PV line up to 5 plies
+        // Walk the Transposition Table to retrieve predicted line of play
         while (currentTraceDepth < 4) {
-          const cached = this.transTable.get(traceChess.fen());
-          if (cached && cached.bestMove) {
+          const transKey = typeof traceChess.hash === 'function' ? traceChess.hash() : traceChess.fen();
+          const cachedNode = this.transTable.get(transKey);
+          if (cachedNode && cachedNode.bestMove) {
             try {
-              const m = JSON.parse(cached.bestMove);
+              const m = JSON.parse(cachedNode.bestMove);
               traceChess.move(m);
               fullPv.push(m.san);
             } catch {
               break;
             }
           } else {
-            // Simple greedy fallback for PV display
+            // Greedy fallback for PV representation
             const traceMoves = traceChess.moves({ verbose: true });
             if (traceMoves.length > 0) {
-              const sortedTrace = this.sortMoves(traceChess, traceMoves);
+              const sortedTrace = this.sortMoves(traceChess, traceMoves, 0, null);
               traceChess.move(sortedTrace[0]);
               fullPv.push(sortedTrace[0].san);
             } else {
