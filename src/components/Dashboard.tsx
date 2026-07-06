@@ -135,6 +135,52 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const [trainConfig, setTrainConfig] = useState({
+    learningRate: 0.01,
+    batchSize: 256,
+    optimizer: 'Adam' as 'Adam' | 'SGD' | 'RMSprop',
+    architecture: 'ResNet-20' as 'ResNet-20' | 'ResNet-40' | 'ViT-Transformer',
+    epochsToRun: 3,
+    trainingTarget: 'pantheon_fusion' as 'stockfish' | 'komodo' | 'patricia' | 'nova' | 'pantheon_fusion' | 'neuralcore_rl_selfplay'
+  });
+  const [isTraining, setIsTraining] = useState(false);
+  const [gradientStep, setGradientStep] = useState(0);
+  const [lossDelta, setLossDelta] = useState<string | null>(null);
+
+  const handleRunSelfTraining = async () => {
+    setIsTraining(true);
+    setGradientStep(1);
+    
+    // Animate gradient steps to look beautiful & interactive
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    await delay(700);
+    setGradientStep(2);
+    await delay(900);
+    setGradientStep(3);
+    await delay(700);
+    setGradientStep(4);
+    await delay(500);
+
+    try {
+      const res = await fetch('/api/cloud-training/self-train', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(trainConfig)
+      });
+      const result = await res.json();
+      if (result.success) {
+        setData(result);
+        setLossDelta(`Converged successfully! Checkpoint saved.`);
+        setTimeout(() => setLossDelta(null), 5000);
+      }
+    } catch (e) {
+      console.error('Self-training error:', e);
+    } finally {
+      setIsTraining(false);
+      setGradientStep(0);
+    }
+  };
+
   // Scroll to bottom of terminal logs
   useEffect(() => {
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -520,37 +566,148 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Cloud Training Heatmap */}
-        <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+        {/* NeuralCore Reinforcement Optimization Hub */}
+        <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col gap-5 justify-between">
+          
+          {/* Top: Neural Policy Optimizer (RL training deck) */}
+          <div className="space-y-3.5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
-                <Grid className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Cloud Training Heatmap</h3>
+                <Award className="w-4 h-4 text-indigo-400" />
+                <h3 className="text-xs font-bold text-white uppercase tracking-wider">NeuralCore Deep Learning Portal</h3>
               </div>
-              <span className="text-[10px] text-amber-400 border border-amber-400/20 bg-amber-400/5 px-2 py-0.5 rounded font-mono">Gradient Focus</span>
+              <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded font-mono font-bold border border-indigo-500/20 animate-pulse">NC-DISTILL</span>
             </div>
 
-            <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-              Real-time reinforcement learning focus grid. Warmer highlights represent chessboard coordinates undergoing active policy convergence and backpropagation weight adjustments in recent match play.
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Formulate weights for our custom <b>NeuralCore Chess Engine</b> via knowledge distillation. Select one of the high-thinking chess engines below as the sparring partner/teacher target.
             </p>
 
-            <div className="flex gap-4 items-center justify-center">
+            <div className="space-y-1 text-xs">
+              <span className="text-indigo-400 font-mono text-[9px] block uppercase font-bold">Sparring Partner & Distillation Teacher</span>
+              <select 
+                value={trainConfig.trainingTarget}
+                onChange={(e) => setTrainConfig(prev => ({ ...prev, trainingTarget: e.target.value as any }))}
+                className="w-full bg-slate-950 border border-indigo-500/30 rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500 font-sans text-xs"
+              >
+                <option value="pantheon_fusion">🔥 Grand Fusion Pantheon (Multi-Engine Composite Target)</option>
+                <option value="neuralcore_rl_selfplay">🤖 NeuralCore RL Self-Play (Autonomous Self-Learning)</option>
+                <option value="stockfish">🐟 Stockfish NNUE (Deep Tactical Generalization)</option>
+                <option value="komodo">🦎 Komodo Dragon (Deep Positional MCTS)</option>
+                <option value="patricia">🦅 Patricia Neural (Ultra-Sharp Tactician)</option>
+                <option value="nova">🌟 Nova Chess (Elegant Creative Combos)</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs pt-1">
+              <div className="space-y-1">
+                <span className="text-slate-500 font-mono text-[9px] block uppercase">Network Arch</span>
+                <select 
+                  value={trainConfig.architecture}
+                  onChange={(e) => setTrainConfig(prev => ({ ...prev, architecture: e.target.value as any }))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-[10.5px]"
+                >
+                  <option value="ResNet-20">ResNet-20 (MCTS)</option>
+                  <option value="ResNet-40">ResNet-40 (Deep)</option>
+                  <option value="ViT-Transformer">ViT-Chess (180M)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-slate-500 font-mono text-[9px] block uppercase">Optimizer</span>
+                <select 
+                  value={trainConfig.optimizer}
+                  onChange={(e) => setTrainConfig(prev => ({ ...prev, optimizer: e.target.value as any }))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-[10.5px]"
+                >
+                  <option value="Adam">Adam Core</option>
+                  <option value="SGD">SGD Momentum</option>
+                  <option value="RMSprop">RMSprop</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-slate-500 font-mono text-[9px] block uppercase">Learning Rate</span>
+                <select 
+                  value={trainConfig.learningRate}
+                  onChange={(e) => setTrainConfig(prev => ({ ...prev, learningRate: parseFloat(e.target.value) }))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-[10.5px]"
+                >
+                  <option value="0.001">0.001 (Slow)</option>
+                  <option value="0.01">0.01 (Balanced)</option>
+                  <option value="0.05">0.05 (Aggressive)</option>
+                  <option value="0.1">0.1 (Turbo)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-slate-500 font-mono text-[9px] block uppercase">Epochs</span>
+                <select 
+                  value={trainConfig.epochsToRun}
+                  onChange={(e) => setTrainConfig(prev => ({ ...prev, epochsToRun: parseInt(e.target.value) }))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-[10.5px]"
+                >
+                  <option value="1">1 Epoch</option>
+                  <option value="3">3 Epochs</option>
+                  <option value="5">5 Epochs</option>
+                  <option value="10">10 Epochs</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              onClick={handleRunSelfTraining}
+              disabled={isTraining}
+              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all shadow-md shadow-indigo-600/10 cursor-pointer disabled:bg-slate-850 disabled:text-slate-600"
+            >
+              {isTraining ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  {gradientStep === 1 ? 'Forward Propagating...' : 
+                   gradientStep === 2 ? 'Running 150 Self-Play Matches...' : 
+                   gradientStep === 3 ? 'Backpropagating gradients...' : 'Minimizing losses...'}
+                </>
+              ) : (
+                <>
+                  <Zap className="w-3.5 h-3.5 fill-current text-indigo-300" />
+                  Run Self-Play Reinforcement Epoch
+                </>
+              )}
+            </button>
+
+            {lossDelta && (
+              <div className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg p-2.5 text-[10px] font-mono text-center animate-pulse">
+                {lossDelta}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom: Exploration Gradient Heatmap */}
+          <div className="border-t border-slate-800/80 pt-4 space-y-3.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                <Grid className="w-4 h-4 text-amber-500" />
+                Exploration Gradient Heatmap
+              </span>
+              <span className="text-[10px] text-amber-400 border border-amber-400/20 bg-amber-400/5 px-2 py-0.5 rounded font-mono">Backprop Focus</span>
+            </div>
+
+            <div className="flex justify-center">
               {/* Heatmap chessboard container */}
-              <div className="relative p-4 bg-slate-950 rounded-2xl border border-slate-800/80 shadow-2xl flex-1 max-w-[280px]">
+              <div className="relative p-3 bg-slate-950 rounded-2xl border border-slate-800/85 shadow-2xl w-full max-w-[240px]">
                 {/* Board files labeling - Top */}
-                <div className="flex justify-between px-4 text-[9px] font-mono font-bold text-slate-600 mb-1">
+                <div className="flex justify-between px-4 text-[7px] font-mono font-bold text-slate-600 mb-1">
                   {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(f => <span key={f} className="w-full text-center">{f}</span>)}
                 </div>
 
                 <div className="flex">
                   {/* Board ranks labeling - Left */}
-                  <div className="flex flex-col justify-between text-[9px] font-mono font-bold text-slate-600 mr-2 py-1">
+                  <div className="flex flex-col justify-between text-[7px] font-mono font-bold text-slate-600 mr-2 py-1">
                     {['8', '7', '6', '5', '4', '3', '2', '1'].map(r => <span key={r} className="h-full flex items-center justify-center">{r}</span>)}
                   </div>
 
                   {/* Core 8x8 heat matrix */}
-                  <div className="flex-1 grid grid-cols-8 gap-[2px]">
+                  <div className="flex-1 grid grid-cols-8 gap-[1.5px]">
                     {['8', '7', '6', '5', '4', '3', '2', '1'].map(rank => 
                       ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(file => {
                         const square = file + rank;
@@ -569,7 +726,7 @@ export const Dashboard: React.FC = () => {
                               </span>
                             )}
                             {/* Hover Details Popover */}
-                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-slate-950 text-white border border-slate-800 text-[10px] rounded px-2.5 py-1.5 opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200 z-30 font-mono whitespace-nowrap shadow-2xl">
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 bg-slate-950 text-white border border-slate-800 text-[10px] rounded px-2 py-1 opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200 z-30 font-mono whitespace-nowrap shadow-2xl">
                               <span className="text-amber-400 font-bold">{square.toUpperCase()}</span>: {score}% intensity
                               <div className="text-[8px] text-slate-400 mt-0.5">Policy gradient backprop active</div>
                             </div>

@@ -1198,23 +1198,22 @@ export const GameArena: React.FC = () => {
             {/* Evaluation Mode */}
             <div className="space-y-2">
               <label className="text-xs font-medium text-slate-300 block">Evaluation Mode</label>
-              <div className="grid grid-cols-3 gap-2 bg-slate-950/80 p-1 rounded-lg border border-slate-850">
-                {(['traditional', 'neural', 'hybrid'] as const).map((m) => {
-                  const isSelected = config.evalMode === m;
-                  return (
-                    <button
-                      key={m}
-                      onClick={() => setConfig({ ...config, evalMode: m })}
-                      className={`
-                        py-1 text-[10px] font-bold font-mono uppercase rounded transition-all
-                        ${isSelected ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}
-                      `}
-                    >
-                      {m}
-                    </button>
-                  );
-                })}
-              </div>
+              <select
+                value={config.evalMode}
+                onChange={(e) => setConfig({ ...config, evalMode: e.target.value as any })}
+                className="w-full bg-slate-950 text-indigo-400 font-mono text-xs rounded-lg border border-slate-800 px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="pantheon_fusion">🔥 NeuralCore Grand Fusion (5-in-1 Ensemble)</option>
+                <option value="neuralcore_rl_selfplay">🤖 NeuralCore RL Self-Play (Self-Learning Engine)</option>
+                <option value="leeza_mcts">🧠 NeuralCore MCTS (Leeza MCTS)</option>
+                <option value="stockfish_nnue">🐟 NeuralCore + Stockfish Distilled (Ultra Deep)</option>
+                <option value="komodo_mcts">🦎 NeuralCore + Komodo Distilled (Positional MCTS)</option>
+                <option value="patricia_neural">🦅 NeuralCore + Patricia Distilled (Sharp Neural)</option>
+                <option value="nova_chess">🌟 NeuralCore + Nova Chess Distilled (Elegant Tactical)</option>
+                <option value="hybrid">✨ NeuralCore Hybrid (Core + Minimax)</option>
+                <option value="neural">🦾 NeuralCore Neural (Standard Policy Head)</option>
+                <option value="traditional">📟 NeuralCore Traditional (Legacy Minimax)</option>
+              </select>
             </div>
 
             {/* Control Actions */}

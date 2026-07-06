@@ -15,13 +15,21 @@ export const LiveAnalysis: React.FC = () => {
   const [chess, setChess] = useState<Chess>(new Chess());
   const [fenInput, setFenInput] = useState<string>(chess.fen());
   const [config, setConfig] = useState<EngineConfig>({
-    maxDepth: 4, // Higher depth for dedicated analysis
+    maxDepth: 5, // Higher depth for dedicated analysis
     personality: 'positional',
-    evalMode: 'hybrid'
+    evalMode: 'leeza_mcts' // Default to our ultimate Leeza Chess Zero MCTS engine
   });
 
   const [copied, setCopied] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
+  const [showPolicy, setShowPolicy] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+
+  // Leeza Chess Zero neural metrics
+  const [leezaMctsNodes, setLeezaMctsNodes] = useState<any[]>([]);
+  const [leezaValueHead, setLeezaValueHead] = useState<{ whiteWin: number; draw: number; blackWin: number } | null>({ whiteWin: 35, draw: 30, blackWin: 35 });
+  const [policyMap, setPolicyMap] = useState<Record<string, number>>({});
+
   const [analysis, setAnalysis] = useState<LiveAnalysisData>({
     depth: 4,
     selDepth: 4,
@@ -52,6 +60,25 @@ export const LiveAnalysis: React.FC = () => {
           isAnalyzing: false,
           commentary: analysis.commentary // Preserve commentary until next requested
         });
+
+        // Store Leeza MCTS Specific outputs
+        if (res.leezaMctsNodes) {
+          setLeezaMctsNodes(res.leezaMctsNodes);
+        } else {
+          setLeezaMctsNodes([]);
+        }
+
+        if (res.leezaValueHead) {
+          setLeezaValueHead(res.leezaValueHead);
+        } else {
+          setLeezaValueHead(null);
+        }
+
+        if (res.policyMap) {
+          setPolicyMap(res.policyMap);
+        } else {
+          setPolicyMap({});
+        }
       } catch (e) {
         console.error('Analysis error:', e);
         setAnalysis(prev => ({ ...prev, isAnalyzing: false }));
@@ -227,6 +254,10 @@ export const LiveAnalysis: React.FC = () => {
               interactive={true}
               flipped={false}
               highlightSquares={analysis.pv.length > 0 ? [chess.history({ verbose: true }).slice(-1)[0]?.to || ''] : []}
+              policyMap={policyMap}
+              showPolicy={showPolicy}
+              heatmapFocus={policyMap}
+              showHeatmap={showHeatmap}
             />
           </div>
 
@@ -257,6 +288,146 @@ export const LiveAnalysis: React.FC = () => {
               {copied ? 'Copied' : 'FEN'}
             </button>
           </form>
+
+          {/* Leeza Chess Zero Neural Core Monitor (Phase C & Leeza Chess Zero) */}
+          <div className="w-full max-w-[536px] mt-4 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-850 pb-2">
+              <div className="flex items-center gap-1.5 text-xs font-extrabold text-indigo-400 tracking-wider uppercase font-mono">
+                <BrainCircuit className="w-4 h-4 text-indigo-400 animate-pulse" />
+                Leeza Zero Value Head Projections
+              </div>
+              <span className="text-[10px] text-indigo-300 font-mono font-bold bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                ACTIVE
+              </span>
+            </div>
+
+            {/* Value Head Win/Draw/Loss Bar */}
+            {leezaValueHead ? (
+              <div className="space-y-2">
+                <div className="flex justify-between text-[11px] font-mono text-slate-400">
+                  <span className="text-emerald-400 font-bold">White Win: {leezaValueHead.whiteWin}%</span>
+                  <span className="text-slate-300 font-bold">Draw: {leezaValueHead.draw}%</span>
+                  <span className="text-blue-400 font-bold">Black Win: {leezaValueHead.blackWin}%</span>
+                </div>
+                <div className="h-4 w-full rounded-lg bg-slate-950 overflow-hidden flex border border-slate-800 p-0.5 shadow-inner">
+                  <div 
+                    className="bg-emerald-500/90 h-full rounded-l transition-all duration-500 flex items-center justify-center text-[8px] font-extrabold text-slate-950" 
+                    style={{ width: `${leezaValueHead.whiteWin}%` }}
+                  >
+                    {leezaValueHead.whiteWin >= 10 ? 'W' : ''}
+                  </div>
+                  <div 
+                    className="bg-slate-400 h-full transition-all duration-500 flex items-center justify-center text-[8px] font-extrabold text-slate-900" 
+                    style={{ width: `${leezaValueHead.draw}%` }}
+                  >
+                    {leezaValueHead.draw >= 10 ? 'D' : ''}
+                  </div>
+                  <div 
+                    className="bg-blue-500/95 h-full rounded-r transition-all duration-500 flex items-center justify-center text-[8px] font-extrabold text-slate-950" 
+                    style={{ width: `${leezaValueHead.blackWin}%` }}
+                  >
+                    {leezaValueHead.blackWin >= 10 ? 'B' : ''}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic py-1 font-mono">Loading Neural Head Projections...</div>
+            )}
+
+            {/* Neural Overlay Selectors */}
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowPolicy(!showPolicy)}
+                className={`py-2 px-3 rounded-lg border text-xs font-bold font-mono transition-all flex items-center justify-between cursor-pointer ${
+                  showPolicy 
+                    ? 'bg-indigo-600/15 border-indigo-500 text-indigo-300 ring-1 ring-indigo-500/20' 
+                    : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-400'
+                }`}
+              >
+                <span>Policy Map P(a|s)</span>
+                <span className={`w-2 h-2 rounded-full ${showPolicy ? 'bg-indigo-400 shadow-sm shadow-indigo-400' : 'bg-slate-800'}`} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowHeatmap(!showHeatmap)}
+                className={`py-2 px-3 rounded-lg border text-xs font-bold font-mono transition-all flex items-center justify-between cursor-pointer ${
+                  showHeatmap 
+                    ? 'bg-rose-600/15 border-rose-500 text-rose-300 ring-1 ring-rose-500/20' 
+                    : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-400'
+                }`}
+              >
+                <span>Neural Heatmap</span>
+                <span className={`w-2 h-2 rounded-full ${showHeatmap ? 'bg-rose-400 shadow-sm shadow-rose-400' : 'bg-slate-800'}`} />
+              </button>
+            </div>
+          </div>
+
+          {/* MCTS Playouts Search Tree Thread Viewer (Phase A) */}
+          {(['leeza_mcts', 'stockfish_nnue', 'komodo_mcts', 'patricia_neural', 'nova_chess', 'pantheon_fusion', 'neuralcore_rl_selfplay'].includes(config.evalMode)) && leezaMctsNodes.length > 0 && (
+            <div className="w-full max-w-[536px] mt-4 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
+              <div className="flex items-center justify-between border-b border-slate-850 pb-2 mb-3">
+                <span className="text-xs font-extrabold text-amber-400 tracking-wider uppercase font-mono flex items-center gap-1.5">
+                  <RefreshCw className="w-4 h-4 text-amber-400 animate-spin" />
+                  {config.evalMode === 'leeza_mcts' && 'NeuralCore MCTS Search Tree Playouts'}
+                  {config.evalMode === 'stockfish_nnue' && 'NeuralCore + Stockfish Distilled Alpha-Beta Paths'}
+                  {config.evalMode === 'komodo_mcts' && 'NeuralCore + Komodo Distilled MCTS Tree'}
+                  {config.evalMode === 'patricia_neural' && 'NeuralCore + Patricia Distilled Tactical Branches'}
+                  {config.evalMode === 'nova_chess' && 'NeuralCore + Nova Chess Distilled Elegant Tree'}
+                  {config.evalMode === 'pantheon_fusion' && 'NeuralCore Pantheon Grand Fusion Votes'}
+                  {config.evalMode === 'neuralcore_rl_selfplay' && 'NeuralCore Autonomous Self-Play Live Learning Tree'}
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {leezaMctsNodes.length} paths
+                </span>
+              </div>
+              <div className="max-h-[220px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+                <table className="w-full text-left text-[11px] font-mono">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-slate-850 pb-1">
+                      <th className="pb-1 font-bold">MOVE</th>
+                      <th className="pb-1 text-right font-bold">
+                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'EPISODES' : config.evalMode === 'pantheon_fusion' ? 'VOTES' : ['stockfish_nnue', 'patricia_neural', 'nova_chess'].includes(config.evalMode) ? 'DEPTH (PLY)' : 'VISITS (N)'}
+                      </th>
+                      <th className="pb-1 text-right font-bold">
+                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'REWARD' : config.evalMode === 'pantheon_fusion' ? 'COMPOSITE VAL' : 'Q-VALUE / EVAL'}
+                      </th>
+                      <th className="pb-1 text-right font-bold">CONFIDENCE</th>
+                      <th className="pb-1 text-right font-bold text-amber-400">
+                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'LEARNED UCT' : config.evalMode === 'pantheon_fusion' ? 'CONSENSUS / VOTERS' : ['stockfish_nnue', 'patricia_neural', 'nova_chess'].includes(config.evalMode) ? 'BOUND' : 'PUCT'}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leezaMctsNodes.slice(0, 8).map((node, i) => (
+                      <tr 
+                        key={i} 
+                        className={`border-b border-slate-950/40 hover:bg-slate-850/35 transition-colors ${
+                          i === 0 ? 'text-amber-300 font-extrabold bg-amber-500/5' : 'text-slate-300'
+                        }`}
+                      >
+                        <td className="py-1.5 flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-500 w-4">{i + 1}.</span>
+                          <span className="font-bold">{node.move}</span>
+                          {i === 0 && <span className="text-[8px] bg-amber-500/10 text-amber-400 px-1 rounded uppercase font-bold tracking-tighter">Best</span>}
+                          {node.voters && (
+                            <span className="text-[8px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-1 py-0.5 rounded ml-2 font-sans truncate max-w-[120px]" title={node.voters}>
+                              {node.voters}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-right text-white">{node.visits}</td>
+                        <td className="py-1.5 text-right">{node.qValue > 0 ? `+${node.qValue}` : node.qValue}</td>
+                        <td className="py-1.5 text-right text-indigo-400">{(node.prior * 100).toFixed(0)}%</td>
+                        <td className="py-1.5 text-right font-extrabold text-amber-400">{node.uct}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right: Engine evaluation panel and Gemini AI interpretation */}
@@ -384,6 +555,29 @@ export const LiveAnalysis: React.FC = () => {
             {/* Analysis configuration controls */}
             <div className="space-y-3 pt-3 border-t border-slate-800">
               <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>Evaluation Core Architecture</span>
+                <select
+                  value={config.evalMode}
+                  onChange={(e) => {
+                    const val = e.target.value as any;
+                    setConfig(prev => ({ ...prev, evalMode: val }));
+                  }}
+                  className="bg-slate-950 text-indigo-400 font-mono text-xs rounded border border-slate-800 px-2 py-1 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="pantheon_fusion">🔥 NeuralCore Grand Fusion (5-in-1 Ensemble)</option>
+                  <option value="neuralcore_rl_selfplay">🤖 NeuralCore RL Self-Play (Self-Learning Engine)</option>
+                  <option value="leeza_mcts">🧠 NeuralCore MCTS (Leeza MCTS)</option>
+                  <option value="stockfish_nnue">🐟 NeuralCore + Stockfish Distilled (Ultra Deep)</option>
+                  <option value="komodo_mcts">🦎 NeuralCore + Komodo Distilled (Positional MCTS)</option>
+                  <option value="patricia_neural">🦅 NeuralCore + Patricia Distilled (Sharp Neural)</option>
+                  <option value="nova_chess">🌟 NeuralCore + Nova Chess Distilled (Elegant Tactical)</option>
+                  <option value="hybrid">✨ NeuralCore Hybrid (Core + Minimax)</option>
+                  <option value="neural">🦾 NeuralCore Neural (Standard Policy Head)</option>
+                  <option value="traditional">📟 NeuralCore Traditional (Legacy Minimax)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
                 <span>Analysis Persona Multipliers</span>
                 <select
                   value={config.personality}

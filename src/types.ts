@@ -26,7 +26,7 @@ export interface EnginePersonality {
   pawnStructureWeight: number; // Pawn structure weight
 }
 
-export type EvaluationMode = 'traditional' | 'neural' | 'hybrid';
+export type EvaluationMode = 'traditional' | 'neural' | 'hybrid' | 'leeza_mcts' | 'stockfish_nnue' | 'komodo_mcts' | 'patricia_neural' | 'nova_chess' | 'pantheon_fusion' | 'neuralcore_rl_selfplay';
 
 export interface EngineConfig {
   maxDepth: number;
@@ -36,6 +36,7 @@ export interface EngineConfig {
   quiescenceLimit?: number;     // Quiescence depth limit to prevent horizon effect
   maxCapturesToCheck?: number;  // Max captures to check in quiescence search
   difficulty?: 'beginner' | 'intermediate' | 'expert' | 'grandmaster';
+  leezaThinkingThreads?: number; // Simulated GPU thinking threads for Leeza
 }
 
 export interface TrainingGame {
@@ -49,6 +50,23 @@ export interface TrainingGame {
   evalHistory: number[];
   startTime: string;
 }
+
+export interface LeezaMCTSNode {
+  move: string;
+  visits: number;
+  qValue: number; // Action value Q (-1 to 1)
+  prior: number;  // Prior probability P (0 to 1)
+  uct: number;    // Selection metric
+}
+
+export interface LeezaTrainingConfig {
+  learningRate: number;
+  batchSize: number;
+  optimizer: 'SGD' | 'Adam' | 'RMSprop';
+  architecture: 'ResNet-20' | 'ResNet-40' | 'ViT-Transformer';
+  epochsToRun: number;
+}
+
 
 export interface EloHistoryPoint {
   epoch: number;

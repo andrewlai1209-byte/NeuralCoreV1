@@ -15,7 +15,12 @@ interface ChessboardProps {
   flipped?: boolean;
   highlightSquares?: string[]; // Squares to highlight (e.g. king in check, or last move)
   engineLastMoveSquares?: string[]; // Squares of the last engine move specifically
+  policyMap?: Record<string, number>; // Map of square coordinates to neural policy percentage
+  showPolicy?: boolean; // Toggle to display policy bubble overlay
+  heatmapFocus?: Record<string, number>; // Map of squares to heat value (0 to 100)
+  showHeatmap?: boolean; // Toggle to display heatmap overlay
 }
+
 
 // Crisp, beautiful custom modern flat vector SVG paths for each chess piece
 const ChessPieceSvg: React.FC<{ type: string; color: string; size: number }> = ({ type, color, size }) => {
@@ -139,8 +144,13 @@ export const Chessboard: React.FC<ChessboardProps> = ({
   interactive = true,
   flipped = false,
   highlightSquares = [],
-  engineLastMoveSquares = []
+  engineLastMoveSquares = [],
+  policyMap = {},
+  showPolicy = false,
+  heatmapFocus = {},
+  showHeatmap = false
 }) => {
+
   const { playMoveSound } = useSound();
   const [chess, setChess] = useState<Chess>(new Chess(fen));
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
@@ -367,6 +377,17 @@ export const Chessboard: React.FC<ChessboardProps> = ({
                     ${isLastMoveSquare ? 'ring-2 ring-emerald-400/60 shadow-[inset_0_0_15px_rgba(16,185,129,0.35)]' : ''}
                   `}
                 >
+                  {/* Leeza Heatmap Overlay (Phase B / Heatmap coordinates) */}
+                  {showHeatmap && heatmapFocus && heatmapFocus[square] !== undefined && heatmapFocus[square] > 10 && (
+                    <div 
+                      className="absolute inset-0 pointer-events-none z-0 transition-all duration-300" 
+                      style={{ 
+                        backgroundColor: `rgba(244, 63, 94, ${Math.min(0.7, heatmapFocus[square] / 150)})`,
+                        boxShadow: heatmapFocus[square] > 60 ? 'inset 0 0 12px rgba(244, 63, 94, 0.45)' : undefined
+                      }}
+                    />
+                  )}
+
                   {/* Subtle pulsing border for engine's last move */}
                   {isEngineLastMove && (
                     <div className="absolute inset-0 border-4 border-indigo-400 z-20 pointer-events-none animate-pulse" />
@@ -375,6 +396,16 @@ export const Chessboard: React.FC<ChessboardProps> = ({
                   {/* Subtle Glow Overlay for Last Move Squares */}
                   {isLastMoveSquare && (
                     <div className="absolute inset-0 bg-emerald-400/10 pointer-events-none z-0 border border-emerald-400/20" />
+                  )}
+
+                  {/* Neural Policy Overlay (Phase C & Leeza Chess Zero) */}
+                  {showPolicy && policyMap && policyMap[square] !== undefined && policyMap[square] > 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center z-25 pointer-events-none animate-fade-in">
+                      <div className="bg-indigo-600/90 text-[10px] text-white font-extrabold font-mono px-1 py-0.5 rounded shadow-lg border border-indigo-400/50 scale-90 md:scale-100 flex flex-col items-center justify-center min-w-[32px]">
+                        <span className="text-[6.5px] text-indigo-200 tracking-tighter uppercase leading-none font-sans font-medium">P(a|s)</span>
+                        <span className="leading-none mt-0.5">{policyMap[square]}%</span>
+                      </div>
+                    </div>
                   )}
 
                   {/* Piece Rendering */}

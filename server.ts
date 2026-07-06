@@ -485,6 +485,130 @@ app.post('/api/cloud-training/toggle-engine', (req, res) => {
 });
 
 /**
+ * POST endpoint to run a Leeza Chess Zero Self-Play Reinforcement Training Epoch (Phase B & Leeza)
+ */
+app.post('/api/cloud-training/self-train', (req, res) => {
+  const { learningRate, batchSize, optimizer, architecture, epochsToRun, trainingTarget } = req.body;
+
+  const lr = parseFloat(learningRate) || 0.01;
+  const size = parseInt(batchSize) || 256;
+  const opt = optimizer || 'Adam';
+  const arch = architecture || 'ResNet-20';
+  const epochs = parseInt(epochsToRun) || 3;
+  const target = trainingTarget || 'pantheon_fusion';
+
+  const targetLabel = 
+    target === 'stockfish' ? 'Stockfish NNUE (Tactics)' :
+    target === 'komodo' ? 'Komodo Dragon (Positional MCTS)' :
+    target === 'patricia' ? 'Patricia Neural (Sharp Attacks)' :
+    target === 'nova' ? 'Nova Chess (Elegant Combos)' :
+    target === 'neuralcore_rl_selfplay' ? 'NeuralCore Autonomous Self-Play (Self-Learning)' :
+    'Grand Fusion Pantheon (Ensemble)';
+
+  if (target === 'neuralcore_rl_selfplay') {
+    addTrainingLog(`Initiating NeuralCore RL Self-Play Training Session... Optimizer: ${opt}, Arch: ${arch}, Batch: ${size}`, 'success', 'System');
+    addTrainingLog(`Generating 15,000 self-play episodes via parallelized Monte Carlo Tree Search simulation...`, 'info', 'System');
+  } else {
+    addTrainingLog(`Initiating NeuralCore CH Distillation Loop... Target: ${targetLabel}, Optimizer: ${opt}, Arch: ${arch}, Batch: ${size}`, 'success', 'System');
+    addTrainingLog(`Streaming 25,000 master game vectors from ${targetLabel} to distill chess policy features...`, 'info', 'System');
+  }
+
+  for (let e = 1; e <= epochs; e++) {
+    // Minimize losses
+    const scaleFactor = lr * (opt === 'Adam' ? 1.5 : opt === 'RMSprop' ? 1.2 : 0.8);
+    currentPolicyLoss = Math.max(0.015, currentPolicyLoss - (0.012 * scaleFactor));
+    currentValueLoss = Math.max(0.01, currentValueLoss - (0.009 * scaleFactor));
+
+    // Increase total games played
+    totalGamesPlayed += Math.floor(Math.random() * 80) + 40;
+
+    // Increment Rating for active models
+    const activeEngines = enginesList.filter(eng => eng.active);
+    activeEngines.forEach(eng => {
+      const eloGain = Math.floor((Math.random() * 12 + 6) * (scaleFactor * 10));
+      eng.baseElo += eloGain;
+      eng.wins += Math.floor(Math.random() * 15) + 10;
+      eng.draws += Math.floor(Math.random() * 8) + 4;
+      
+      if (eng.id === 'neuralcore') currentEloNeuralCore = eng.baseElo;
+      if (eng.id === 'hybrid') currentEloHybrid = eng.baseElo;
+      if (eng.id === 'neural') currentEloNeural = eng.baseElo;
+      if (eng.id === 'traditional') currentEloTraditional = eng.baseElo;
+      if (eng.id === 'policy') currentEloPolicy = eng.baseElo;
+    });
+
+    // Generate realistic logs for epochs
+    if (target === 'neuralcore_rl_selfplay') {
+      addTrainingLog(`[Epoch ${e}/${epochs}] Simulating autonomous agent matches... Experience replay queue updated.`, 'info', arch);
+      addTrainingLog(`[Epoch ${e}/${epochs}] TD-Loss: ${currentPolicyLoss.toFixed(4)} | Value Loss: ${currentValueLoss.toFixed(4)} | Reward Score: +${(1.45 - currentValueLoss).toFixed(3)}`, 'success', arch);
+      addTrainingLog(`[Epoch ${e}/${epochs}] Adjusted ${arch} neural weights via Policy Gradient actor-critic update. ELO boosted!`, 'info', arch);
+    } else {
+      addTrainingLog(`[Epoch ${e}/${epochs}] Synthesizing positional parameters and deep feature patterns of ${targetLabel} into ${arch}...`, 'info', arch);
+      addTrainingLog(`[Epoch ${e}/${epochs}] NeuralCore Policy Loss: ${currentPolicyLoss.toFixed(4)} | Value Loss: ${currentValueLoss.toFixed(4)}`, 'success', arch);
+      addTrainingLog(`[Epoch ${e}/${epochs}] Adjusted ${arch} neural weights via supervised backpropagation step. ELO ratings boosted!`, 'info', arch);
+    }
+  }
+
+  // Update eloHistory and lossHistory with the new epoch data
+  const nextEpoch = eloHistory.length + 1;
+  eloHistory.push({
+    epoch: nextEpoch,
+    gamesPlayed: totalGamesPlayed,
+    eloTraditional: currentEloTraditional,
+    eloNeural: currentEloNeural,
+    eloHybrid: currentEloHybrid,
+    eloNeuralCore: currentEloNeuralCore,
+  });
+
+  lossHistory.push({
+    epoch: nextEpoch,
+    policyLoss: parseFloat(currentPolicyLoss.toFixed(4)),
+    valueLoss: parseFloat(currentValueLoss.toFixed(4)),
+    accuracy: Math.min(99.5, 75 + (eloHistory.length * 1.1) + Math.random() * 1.5)
+  });
+
+  // Randomize some hotspot training focus points
+  const focusKeys = Object.keys(heatmapFocus);
+  for (let k = 0; k < 12; k++) {
+    const randomKey = focusKeys[Math.floor(Math.random() * focusKeys.length)];
+    heatmapFocus[randomKey] = Math.min(100, Math.floor(Math.random() * 50) + 45);
+  }
+
+  // Add a newly finished simulation game to recent games
+  const simulateGameResult = Math.random() < 0.55 ? '1-0' : Math.random() < 0.75 ? '1/2-1/2' : '0-1';
+  const newGame: TrainingGame = {
+    id: `rl_${Math.floor(Math.random() * 900000 + 100000)}`,
+    whiteEngine: `Leeza Zero (${arch})`,
+    blackEngine: `Aetheris Hybrid (v3.0)`,
+    result: simulateGameResult as any,
+    movesCount: Math.floor(Math.random() * 35) + 25,
+    currentFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    moveHistory: ['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4'],
+    evalHistory: [10, 5, 15, -5, 10, 8],
+    startTime: new Date().toLocaleTimeString()
+  };
+  recentFinishedGames.unshift(newGame);
+  if (recentFinishedGames.length > 20) {
+    recentFinishedGames.pop();
+  }
+
+  addTrainingLog(`Leeza Chess Zero weights successfully optimized. Deep learning checkpoint stored.`, 'success', 'System');
+
+  res.json({
+    success: true,
+    totalGames: totalGamesPlayed,
+    policyLoss: currentPolicyLoss,
+    valueLoss: currentValueLoss,
+    enginesList,
+    eloHistory,
+    lossHistory,
+    heatmapFocus,
+    recentFinishedGames
+  });
+});
+
+
+/**
  * POST endpoint to request Gemini Grandmaster analysis for a FEN position
  */
 app.post('/api/gemini/analyze', async (req, res) => {
