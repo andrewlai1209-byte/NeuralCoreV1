@@ -864,7 +864,10 @@ python export_onnx.py --checkpoint "./weights/gen_32.pt" --output "aetheris_net.
                       <option value="gambiter">Gambiter</option>
                       <option value="defensive">Defensive</option>
                     </select>
-                    <input type="number" placeholder="Depth (1-8)" value={forgeDepth} onChange={(e) => setForgeDepth(parseInt(e.target.value))} className="bg-slate-950 border border-slate-800 p-2 text-xs rounded-lg text-white" />
+                    <input type="number" placeholder="Depth (1-8)" value={isNaN(forgeDepth) ? '' : forgeDepth} onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      setForgeDepth(isNaN(val) ? NaN : val);
+                    }} className="bg-slate-950 border border-slate-800 p-2 text-xs rounded-lg text-white" />
                     <button onClick={handleForgeSubmit} disabled={forgeLoading} className="bg-pink-600 hover:bg-pink-700 text-white text-xs font-bold rounded-lg p-2">Forge Now</button>
                   </div>
                 </div>
@@ -896,7 +899,7 @@ python export_onnx.py --checkpoint "./weights/gen_32.pt" --output "aetheris_net.
   "fen": "r1bqkbnr/pppp1ppp/... w KQkq - 0 1", // Optional
   "depth": 3,                                  // 1 to 8 (scales up to Grandmaster)
   "personality": "positional",                 // "tactical" | "positional" | "gambiter" | "defensive"
-  "evalMode": "neuralcore_rl_selfplay"         // "leeza_mcts" | "stockfish_nnue" | "komodo_mcts" | "patricia_neural" | "nova_chess" | "pantheon_fusion" | "neuralcore_rl_selfplay" | "hybrid"
+  "evalMode": "neuralcore_rl_selfplay"         // "leeza_mcts" | "stockfish_nnue" | "komodo_mcts" | "patricia_neural" | "nova_chess" | "lc0_neural" | "torch_hybrid" | "pantheon_fusion" | "neuralcore_rl_selfplay" | "hybrid"
 }`}
                     </pre>
                   </div>
@@ -932,8 +935,11 @@ ${window.location.origin}/api/engine/search`}
                       <div className="space-y-1">
                         <label className="text-slate-400 font-mono font-medium block">Search Depth (1-8)</label>
                         <select
-                          value={playgroundDepth}
-                          onChange={(e) => setPlaygroundDepth(parseInt(e.target.value))}
+                          value={isNaN(playgroundDepth) ? '' : playgroundDepth}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            setPlaygroundDepth(isNaN(val) ? NaN : val);
+                          }}
                           className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono text-[11px] text-white focus:border-emerald-500 focus:outline-none"
                         >
                           <option value={1}>1 (Novice)</option>
@@ -971,6 +977,8 @@ ${window.location.origin}/api/engine/search`}
                       >
                         <option value="neuralcore_rl_selfplay">NeuralCore RL Self-Play (TD Reinforcement Learner)</option>
                         <option value="stockfish_nnue">Stockfish NNUE Search (Efficiently Updatable Neural Net)</option>
+                        <option value="lc0_neural">Leela Chess Zero Lc0 (Deep Positional Neural)</option>
+                        <option value="torch_hybrid">Torch Engine (High Mobility Tactical Hybrid)</option>
                         <option value="leeza_mcts">Leeza Chess Zero (Monte Carlo Tree Search Policy)</option>
                         <option value="komodo_mcts">Komodo Dragon MCTS (Strategic Tree Search)</option>
                         <option value="patricia_neural">Patricia Neural (Safety-Aware Positional)</option>

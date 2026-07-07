@@ -5,7 +5,10 @@
 
 import { Chess } from 'chess.js';
 import { EngineConfig, EnginePersonality, EnginePersonalityId, EnginePersonalityId as PersonalityId } from './types';
+import { convertToBitboards, popCount, FILE_MASKS, RANK_MASKS, CENTER_CORE_MASK, CENTER_EXTENDED_MASK, PASSED_PAWN_WHITE_MASKS, PASSED_PAWN_BLACK_MASKS, KING_SHIELD_WHITE_MASKS, KING_SHIELD_BLACK_MASKS } from './lib/bitboard';
 import { findBookMove } from './openingBook';
+import { db } from './lib/firebase';
+import { doc, getDoc, updateDoc, increment, setDoc } from 'firebase/firestore';
 
 // Standard material values
 const BASE_VALUES = {
@@ -97,6 +100,7 @@ const PST_KING_ENDGAME = [
   [-50,-30,-30,-30,-30,-30,-30,-50]
 ];
 
+
 // Personalities Configurations
 export const PERSONALITIES: Record<EnginePersonalityId, EnginePersonality> = {
   tactical: {
@@ -149,10 +153,31 @@ export const PERSONALITIES: Record<EnginePersonalityId, EnginePersonality> = {
   }
 };
 
+// Training Profiles (incorporating styles of top-tier engines)
+export const TRAINING_PROFILES: Record<string, { aggression: number; positional: number; mobility: number; kingSafety: number }> = {
+  asmfish: { aggression: 0.8, positional: 0.4, mobility: 0.7, kingSafety: 0.6 },
+  bootchess: { aggression: 0.5, positional: 0.2, mobility: 0.3, kingSafety: 0.3 },
+  critter: { aggression: 0.85, positional: 0.3, mobility: 0.6, kingSafety: 0.4 },
+  caissa: { aggression: 0.3, positional: 0.9, mobility: 0.4, kingSafety: 0.7 },
+  etherreal: { aggression: 0.5, positional: 0.7, mobility: 0.5, kingSafety: 0.6 },
+  fatfriz2: { aggression: 0.9, positional: 0.2, mobility: 0.7, kingSafety: 0.3 },
+  igel: { aggression: 0.5, positional: 0.6, mobility: 0.5, kingSafety: 0.6 },
+  houdini: { aggression: 0.95, positional: 0.2, mobility: 0.8, kingSafety: 0.3 },
+  koivisto: { aggression: 0.6, positional: 0.8, mobility: 0.6, kingSafety: 0.5 },
+  minic: { aggression: 0.4, positional: 0.7, mobility: 0.4, kingSafety: 0.6 },
+  rubichess: { aggression: 0.3, positional: 0.8, mobility: 0.4, kingSafety: 0.8 },
+  seer: { aggression: 0.5, positional: 0.7, mobility: 0.5, kingSafety: 0.5 },
+  slowchess: { aggression: 0.2, positional: 0.9, mobility: 0.3, kingSafety: 0.7 },
+  xiphos: { aggression: 0.85, positional: 0.3, mobility: 0.7, kingSafety: 0.4 },
+  sugar: { aggression: 0.7, positional: 0.5, mobility: 0.6, kingSafety: 0.5 },
+};
+
 /**
  * Custom Chess Engine Core
  */
 export class ChessEngine {
+// ...
+
   private config: EngineConfig;
   private nodesCount: number = 0;
   private startTime: number = 0;
@@ -170,6 +195,18 @@ export class ChessEngine {
       hash = (hash * 31 + str.charCodeAt(i)) | 0;
     }
     return Math.abs(hash);
+  }
+
+  private hasNonPawnPieces(chess: Chess): boolean {
+    const fen = chess.fen().split(' ')[0];
+    const turn = chess.turn();
+    const pieces = turn === 'w' ? 'RNBQ' : 'rnbq';
+    for (let i = 0; i < fen.length; i++) {
+      const char = fen[i];
+      if (char === ' ') break; // end of board representation
+      if (pieces.indexOf(char) !== -1) return true;
+    }
+    return false;
   }
 
   constructor(config: EngineConfig) {
@@ -199,36 +236,26 @@ export class ChessEngine {
       return Math.round(0.4 * nnueVal + 0.6 * hybridVal);
     }
 
-    const board = chess.board();
+    // Modern 64-bit Bitboard Conversion
+    const bb = convertToBitboards(chess);
 
     // 1. Calculate dynamic game phase based on remaining non-pawn material
-    // Starting material: 4 knights (1280), 4 bishops (1320), 4 rooks (2000), 2 queens (1800) = 6400
-    let nonPawnMaterial = 0;
-    let whiteBishops = 0;
-    let blackBishops = 0;
-    const whitePawnsInFile = new Array(8).fill(0);
-    const blackPawnsInFile = new Array(8).fill(0);
+    const whiteQueens = popCount(bb.wq);
+    const blackQueens = popCount(bb.bq);
+    const whiteRooks = popCount(bb.wr);
+    const blackRooks = popCount(bb.br);
+    const whiteBishops = popCount(bb.wb);
+    const blackBishops = popCount(bb.bb);
+    const whiteKnights = popCount(bb.wn);
+    const blackKnights = popCount(bb.bn);
+    const whitePawns = popCount(bb.wp);
+    const blackPawns = popCount(bb.bp);
 
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const cell = board[r][c];
-        if (!cell) continue;
-        const type = cell.type;
-        const color = cell.color;
-
-        if (type !== 'p' && type !== 'k') {
-          nonPawnMaterial += BASE_VALUES[type];
-        }
-
-        if (type === 'p') {
-          if (color === 'w') whitePawnsInFile[c]++;
-          else blackPawnsInFile[c]++;
-        } else if (type === 'b') {
-          if (color === 'w') whiteBishops++;
-          else blackBishops++;
-        }
-      }
-    }
+    const nonPawnMaterial = 
+      (whiteQueens + blackQueens) * 900 + 
+      (whiteRooks + blackRooks) * 500 + 
+      (whiteBishops + blackBishops) * 330 + 
+      (whiteKnights + blackKnights) * 320;
 
     // Phase scales from 1.0 (pure middlegame) to 0.0 (pure endgame)
     const phase = Math.min(1.0, nonPawnMaterial / 6400);
@@ -249,67 +276,89 @@ export class ChessEngine {
       }
     }
 
-    // Find Kings' positions for safety calculations
-    let whiteKingPos = { r: 7, c: 4 };
-    let blackKingPos = { r: 0, c: 4 };
-
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const cell = board[r][c];
-        if (!cell) continue;
-
-        const type = cell.type;
-        const color = cell.color;
-        const sign = color === 'w' ? 1 : -1;
-
-        if (type === 'k') {
-          if (color === 'w') whiteKingPos = { r, c };
-          else blackKingPos = { r, c };
-        }
-
-        // Material score
-        let matVal = personality.materialWeights[type] || BASE_VALUES[type];
-        if (this.config.customWeights && this.config.customWeights[type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k'] !== undefined) {
-          matVal = this.config.customWeights[type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k']!;
-        }
-        if (trainedAdjustments && trainedAdjustments.materialWeights && trainedAdjustments.materialWeights[type] !== undefined) {
-          matVal = matVal * (1 + trainedAdjustments.materialWeights[type]);
-        }
-        score += sign * matVal;
-
-        // Piece Square Table score (map index based on color)
-        const rowIdx = color === 'w' ? r : 7 - r;
-        const colIdx = color === 'w' ? c : 7 - c;
-        let pstVal = 0;
-
-        switch (type) {
-          case 'p': pstVal = PST_PAWN[rowIdx][colIdx]; break;
-          case 'n': pstVal = PST_KNIGHT[rowIdx][colIdx]; break;
-          case 'b': pstVal = PST_BISHOP[rowIdx][colIdx]; break;
-          case 'r': pstVal = PST_ROOK[rowIdx][colIdx]; break;
-          case 'q': pstVal = PST_QUEEN[rowIdx][colIdx]; break;
-          case 'k': 
-            // Tapered King PST: Smoothly interpolate between middle game and endgame positions
-            const middleVal = PST_KING_MIDDLE[rowIdx][colIdx];
-            const endgameVal = PST_KING_ENDGAME[rowIdx][colIdx];
-            pstVal = phase * middleVal + (1 - phase) * endgameVal;
-            break;
-        }
-
-        let pstWeight = personality.pstWeights;
-        if (this.config.customWeights && this.config.customWeights.pstWeights !== undefined) {
-          pstWeight = this.config.customWeights.pstWeights;
-        }
-        if (trainedAdjustments && trainedAdjustments.pstMultiplier !== undefined) {
-          pstWeight *= trainedAdjustments.pstMultiplier;
-        }
-        if (this.config.difficulty === 'beginner') {
-          pstWeight = 0.1;
-        } else if (this.config.difficulty === 'intermediate') {
-          pstWeight *= 0.5;
-        }
-        score += sign * pstVal * pstWeight;
+    // Material values dynamic lookup
+    const getMaterialValue = (type: string): number => {
+      let matVal = personality.materialWeights[type as keyof typeof personality.materialWeights] || BASE_VALUES[type as keyof typeof BASE_VALUES];
+      if (this.config.customWeights && this.config.customWeights[type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k'] !== undefined) {
+        matVal = this.config.customWeights[type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k']!;
       }
+      if (trainedAdjustments && trainedAdjustments.materialWeights && trainedAdjustments.materialWeights[type] !== undefined) {
+        matVal = matVal * (1 + trainedAdjustments.materialWeights[type]);
+      }
+      return matVal;
+    };
+
+    let pstWeight = personality.pstWeights;
+    if (this.config.customWeights && this.config.customWeights.pstWeights !== undefined) {
+      pstWeight = this.config.customWeights.pstWeights;
+    }
+    if (trainedAdjustments && trainedAdjustments.pstMultiplier !== undefined) {
+      pstWeight *= trainedAdjustments.pstMultiplier;
+    }
+    if (this.config.difficulty === 'beginner') {
+      pstWeight = 0.1;
+    } else if (this.config.difficulty === 'intermediate') {
+      pstWeight *= 0.5;
+    }
+
+    const getPstAndMaterialScore = (pieceBb: bigint, pst: number[][], type: string, sign: number): number => {
+      let bbScore = 0;
+      let temp = pieceBb;
+      const baseValue = getMaterialValue(type);
+      while (temp > 0n) {
+        const lsb = temp & -temp;
+        const idx = lsb.toString(2).length - 1;
+        const file = idx % 8;
+        const rank = Math.floor(idx / 8);
+        
+        const rIdx = sign === 1 ? 7 - rank : rank;
+        const cIdx = sign === 1 ? file : 7 - file;
+        
+        bbScore += sign * (baseValue + pst[rIdx][cIdx] * pstWeight);
+        temp &= temp - 1n;
+      }
+      return bbScore;
+    };
+
+    // Calculate material and piece square tables
+    score += getPstAndMaterialScore(bb.wp, PST_PAWN, 'p', 1);
+    score += getPstAndMaterialScore(bb.wn, PST_KNIGHT, 'n', 1);
+    score += getPstAndMaterialScore(bb.wb, PST_BISHOP, 'b', 1);
+    score += getPstAndMaterialScore(bb.wr, PST_ROOK, 'r', 1);
+    score += getPstAndMaterialScore(bb.wq, PST_QUEEN, 'q', 1);
+
+    let wkTemp = bb.wk;
+    while (wkTemp > 0n) {
+      const idx = (wkTemp & -wkTemp).toString(2).length - 1;
+      const file = idx % 8;
+      const rank = Math.floor(idx / 8);
+      const rIdx = 7 - rank;
+      const cIdx = file;
+      const middleVal = PST_KING_MIDDLE[rIdx][cIdx];
+      const endgameVal = PST_KING_ENDGAME[rIdx][cIdx];
+      const pstVal = phase * middleVal + (1 - phase) * endgameVal;
+      score += getMaterialValue('k') + pstVal * pstWeight;
+      wkTemp &= wkTemp - 1n;
+    }
+
+    score += getPstAndMaterialScore(bb.bp, PST_PAWN, 'p', -1);
+    score += getPstAndMaterialScore(bb.bn, PST_KNIGHT, 'n', -1);
+    score += getPstAndMaterialScore(bb.bb, PST_BISHOP, 'b', -1);
+    score += getPstAndMaterialScore(bb.br, PST_ROOK, 'r', -1);
+    score += getPstAndMaterialScore(bb.bq, PST_QUEEN, 'q', -1);
+
+    let bkTemp = bb.bk;
+    while (bkTemp > 0n) {
+      const idx = (bkTemp & -bkTemp).toString(2).length - 1;
+      const file = idx % 8;
+      const rank = Math.floor(idx / 8);
+      const rIdx = rank;
+      const cIdx = 7 - file;
+      const middleVal = PST_KING_MIDDLE[rIdx][cIdx];
+      const endgameVal = PST_KING_ENDGAME[rIdx][cIdx];
+      const pstVal = phase * middleVal + (1 - phase) * endgameVal;
+      score -= getMaterialValue('k') + pstVal * pstWeight;
+      bkTemp &= bkTemp - 1n;
     }
 
     // Add mobility weight (number of legal moves)
@@ -319,6 +368,9 @@ export class ChessEngine {
     if (trainedAdjustments && trainedAdjustments.mobilityMultiplier !== undefined) {
       mobilityW *= trainedAdjustments.mobilityMultiplier;
     }
+    if (trainedAdjustments && trainedAdjustments.styleWeights && trainedAdjustments.styleWeights.mobility !== undefined) {
+      mobilityW *= (trainedAdjustments.styleWeights.mobility / 0.5);
+    }
     if (this.config.difficulty === 'beginner') {
       mobilityW = 0;
     } else if (this.config.difficulty === 'intermediate') {
@@ -327,14 +379,11 @@ export class ChessEngine {
     const mobilityScore = activeMoves * 1.5 * mobilityW;
     score += (turn === 'w' ? 1 : -1) * mobilityScore;
 
-    // Neural mode or Hybrid mode: Add central control dynamic policy weights
+    // Neural mode or Hybrid mode: Add central control dynamic policy weights via bitboards
     if (this.config.evalMode === 'neural' || this.config.evalMode === 'hybrid') {
-      const centralSquares = ['d4', 'd5', 'e4', 'e5', 'c4', 'c5', 'f4', 'f5'];
-      let controlFactor = 0;
-      for (const sq of centralSquares) {
-        const code = sq.charCodeAt(0) + sq.charCodeAt(1);
-        controlFactor += (code % 7 - 3) * 12; 
-      }
+      const coreControl = popCount(bb.whitePieces & CENTER_CORE_MASK) - popCount(bb.blackPieces & CENTER_CORE_MASK);
+      const extendedControl = popCount(bb.whitePieces & CENTER_EXTENDED_MASK) - popCount(bb.blackPieces & CENTER_EXTENDED_MASK);
+      const controlFactor = coreControl * 20 + extendedControl * 8;
 
       let neuralBonus = controlFactor * trainingProgress * 15;
       if (trainedAdjustments && trainedAdjustments.neuralMultiplier !== undefined) {
@@ -343,8 +392,19 @@ export class ChessEngine {
       score += (turn === 'w' ? 1 : -1) * neuralBonus;
     }
 
-    // Pawn structure evaluation heuristics
+    // Pawn structure evaluation heuristics via bitboards
     let positionalExtras = 0;
+    let positionalMult = 1.0;
+    if (trainedAdjustments && trainedAdjustments.styleWeights && trainedAdjustments.styleWeights.positional !== undefined) {
+      positionalMult = trainedAdjustments.styleWeights.positional / 0.5;
+    }
+    const whitePawnsInFile = new Array(8).fill(0);
+    const blackPawnsInFile = new Array(8).fill(0);
+    for (let c = 0; c < 8; c++) {
+      whitePawnsInFile[c] = popCount(bb.wp & FILE_MASKS[c]);
+      blackPawnsInFile[c] = popCount(bb.bp & FILE_MASKS[c]);
+    }
+
     if (this.config.difficulty !== 'beginner') {
       for (let c = 0; c < 8; c++) {
         // Doubled pawns penalty (pawns on the same file)
@@ -365,148 +425,166 @@ export class ChessEngine {
       if (blackBishops >= 2) positionalExtras -= bpBonus;
     }
 
-    score += positionalExtras;
+    score += positionalExtras * positionalMult;
 
-    // King safety heuristics (only relevant in middle game phase)
+    // King safety heuristics (only relevant in middle game phase) via precomputed bitboard king-shields
     let kingSafetyExtras = 0;
     if (this.config.difficulty !== 'beginner' && phase > 0.3) {
-      const ksWeight = personality.kingSafetyWeight || 0.5;
+      let ksWeight = personality.kingSafetyWeight || 0.5;
+      if (trainedAdjustments && trainedAdjustments.styleWeights && trainedAdjustments.styleWeights.kingSafety !== undefined) {
+        ksWeight *= (trainedAdjustments.styleWeights.kingSafety / 0.5);
+      }
+
+      const getSetBitIndex = (singleBitBb: bigint): number => {
+        return singleBitBb === 0n ? 36 : singleBitBb.toString(2).length - 1;
+      };
       
-      // Pawn shield check for White King
-      if (whiteKingPos.c >= 5) {
-        let shieldCount = 0;
-        if (board[6]?.[5]?.type === 'p' && board[6]?.[5]?.color === 'w') shieldCount++;
-        else if (board[5]?.[5]?.type === 'p' && board[5]?.[5]?.color === 'w') shieldCount += 0.5;
-        if (board[6]?.[6]?.type === 'p' && board[6]?.[6]?.color === 'w') shieldCount++;
-        else if (board[5]?.[6]?.type === 'p' && board[5]?.[6]?.color === 'w') shieldCount += 0.5;
-        if (board[6]?.[7]?.type === 'p' && board[6]?.[7]?.color === 'w') shieldCount++;
-        else if (board[5]?.[7]?.type === 'p' && board[5]?.[7]?.color === 'w') shieldCount += 0.5;
-        kingSafetyExtras -= (3 - shieldCount) * 28 * ksWeight;
+      const wkIdx = getSetBitIndex(bb.wk);
+      const wkShield = KING_SHIELD_WHITE_MASKS[wkIdx];
+      const wShieldCount = popCount(bb.wp & wkShield);
+      let ownShieldPenalty = (3 - wShieldCount) * 28 * ksWeight;
+      if (trainedAdjustments && trainedAdjustments.styleWeights && trainedAdjustments.styleWeights.aggression !== undefined) {
+        // High aggression makes us care less about our own king's safety (reckless attacks)
+        ownShieldPenalty *= Math.max(0.3, 1.5 - trainedAdjustments.styleWeights.aggression);
       }
-      else if (whiteKingPos.c <= 2) {
-        let shieldCount = 0;
-        if (board[6]?.[0]?.type === 'p' && board[6]?.[0]?.color === 'w') shieldCount++;
-        else if (board[5]?.[0]?.type === 'p' && board[5]?.[0]?.color === 'w') shieldCount += 0.5;
-        if (board[6]?.[1]?.type === 'p' && board[6]?.[1]?.color === 'w') shieldCount++;
-        else if (board[5]?.[1]?.type === 'p' && board[5]?.[1]?.color === 'w') shieldCount += 0.5;
-        if (board[6]?.[2]?.type === 'p' && board[6]?.[2]?.color === 'w') shieldCount++;
-        else if (board[5]?.[2]?.type === 'p' && board[5]?.[2]?.color === 'w') shieldCount += 0.5;
-        kingSafetyExtras -= (3 - shieldCount) * 28 * ksWeight;
+      kingSafetyExtras -= ownShieldPenalty;
+
+      const bkIdx = getSetBitIndex(bb.bk);
+      const bkShield = KING_SHIELD_BLACK_MASKS[bkIdx];
+      const bShieldCount = popCount(bb.bp & bkShield);
+      let enemyShieldPenalty = (3 - bShieldCount) * 28 * ksWeight;
+      if (trainedAdjustments && trainedAdjustments.styleWeights && trainedAdjustments.styleWeights.aggression !== undefined) {
+        // High aggression makes us value attacking the enemy king (larger penalty for enemy exposure)
+        enemyShieldPenalty *= Math.min(2.0, 0.5 + trainedAdjustments.styleWeights.aggression);
       }
-      
-      // Pawn shield check for Black King
-      if (blackKingPos.c >= 5) {
-        let shieldCount = 0;
-        if (board[1]?.[5]?.type === 'p' && board[1]?.[5]?.color === 'b') shieldCount++;
-        else if (board[2]?.[5]?.type === 'p' && board[2]?.[5]?.color === 'b') shieldCount += 0.5;
-        if (board[1]?.[6]?.type === 'p' && board[1]?.[6]?.color === 'b') shieldCount++;
-        else if (board[2]?.[6]?.type === 'p' && board[2]?.[6]?.color === 'b') shieldCount += 0.5;
-        if (board[1]?.[7]?.type === 'p' && board[1]?.[7]?.color === 'b') shieldCount++;
-        else if (board[2]?.[7]?.type === 'p' && board[2]?.[7]?.color === 'b') shieldCount += 0.5;
-        kingSafetyExtras += (3 - shieldCount) * 28 * ksWeight;
-      }
-      else if (blackKingPos.c <= 2) {
-        let shieldCount = 0;
-        if (board[1]?.[0]?.type === 'p' && board[1]?.[0]?.color === 'b') shieldCount++;
-        else if (board[2]?.[0]?.type === 'p' && board[2]?.[0]?.color === 'b') shieldCount += 0.5;
-        if (board[1]?.[1]?.type === 'p' && board[1]?.[1]?.color === 'b') shieldCount++;
-        else if (board[2]?.[1]?.type === 'p' && board[2]?.[1]?.color === 'b') shieldCount += 0.5;
-        if (board[1]?.[2]?.type === 'p' && board[1]?.[2]?.color === 'b') shieldCount++;
-        else if (board[2]?.[2]?.type === 'p' && board[2]?.[2]?.color === 'b') shieldCount += 0.5;
-        kingSafetyExtras += (3 - shieldCount) * 28 * ksWeight;
-      }
+      kingSafetyExtras += enemyShieldPenalty;
     }
     if (this.config.difficulty === 'intermediate') {
       kingSafetyExtras *= 0.5;
     }
     score += kingSafetyExtras;
 
-    // Advanced positional features: passed pawns, rook open files, knight outposts
+    // Advanced positional features via bitboards: passed pawns, rook open files, knight outposts
     let dynamicPositionalExtras = 0;
     if (this.config.difficulty !== 'beginner') {
-      for (let r = 0; r < 8; r++) {
-        for (let c = 0; c < 8; c++) {
-          const cell = board[r][c];
-          if (!cell) continue;
+      // White Passed Pawns
+      let wpTemp = bb.wp;
+      while (wpTemp > 0n) {
+        const idx = (wpTemp & -wpTemp).toString(2).length - 1;
+        const rank = Math.floor(idx / 8);
+        if ((bb.bp & PASSED_PAWN_WHITE_MASKS[idx]) === 0n) {
+          const mgBonus = (7 - rank) * 15;
+          const egBonus = (7 - rank) * 30;
+          const bonus = phase * mgBonus + (1 - phase) * egBonus;
+          dynamicPositionalExtras += bonus;
+        }
+        wpTemp &= wpTemp - 1n;
+      }
 
-          const sign = cell.color === 'w' ? 1 : -1;
+      // Black Passed Pawns
+      let bpTemp = bb.bp;
+      while (bpTemp > 0n) {
+        const idx = (bpTemp & -bpTemp).toString(2).length - 1;
+        const rank = Math.floor(idx / 8);
+        if ((bb.wp & PASSED_PAWN_BLACK_MASKS[idx]) === 0n) {
+          const mgBonus = rank * 15;
+          const egBonus = rank * 30;
+          const bonus = phase * mgBonus + (1 - phase) * egBonus;
+          dynamicPositionalExtras -= bonus;
+        }
+        bpTemp &= bpTemp - 1n;
+      }
 
-          // Rook on open/semi-open files & 7th rank
-          if (cell.type === 'r') {
-            const isWhite = cell.color === 'w';
-            const filePawnsFriendly = isWhite ? whitePawnsInFile[c] : blackPawnsInFile[c];
-            const filePawnsEnemy = isWhite ? blackPawnsInFile[c] : whitePawnsInFile[c];
-            
-            if (filePawnsFriendly === 0 && filePawnsEnemy === 0) {
-              dynamicPositionalExtras += sign * 35; // Fully open file
-            } else if (filePawnsFriendly === 0) {
-              dynamicPositionalExtras += sign * 20; // Semi-open file
-            }
+      // White Rooks
+      let wrTemp = bb.wr;
+      while (wrTemp > 0n) {
+        const idx = (wrTemp & -wrTemp).toString(2).length - 1;
+        const file = idx % 8;
+        const rank = Math.floor(idx / 8);
+        
+        const friendlyPawns = bb.wp & FILE_MASKS[file];
+        const enemyPawns = bb.bp & FILE_MASKS[file];
+        
+        if (friendlyPawns === 0n && enemyPawns === 0n) {
+          dynamicPositionalExtras += 35; // Fully open file
+        } else if (friendlyPawns === 0n) {
+          dynamicPositionalExtras += 20; // Semi-open file
+        }
+        
+        if (rank === 6) { // 7th rank (rank index 6)
+          dynamicPositionalExtras += 25;
+        }
+        wrTemp &= wrTemp - 1n;
+      }
 
-            // Rook on 7th rank bonus (trapping king, attacking pawns)
-            if (isWhite && r === 1) {
-              dynamicPositionalExtras += 25;
-            } else if (!isWhite && r === 6) {
-              dynamicPositionalExtras -= 25;
-            }
+      // Black Rooks
+      let brTemp = bb.br;
+      while (brTemp > 0n) {
+        const idx = (brTemp & -brTemp).toString(2).length - 1;
+        const file = idx % 8;
+        const rank = Math.floor(idx / 8);
+        
+        const friendlyPawns = bb.bp & FILE_MASKS[file];
+        const enemyPawns = bb.wp & FILE_MASKS[file];
+        
+        if (friendlyPawns === 0n && enemyPawns === 0n) {
+          dynamicPositionalExtras -= 35;
+        } else if (friendlyPawns === 0n) {
+          dynamicPositionalExtras -= 20;
+        }
+        
+        if (rank === 1) { // 2nd rank (rank index 1)
+          dynamicPositionalExtras -= 25;
+        }
+        brTemp &= brTemp - 1n;
+      }
+
+      // White Knights Outpost
+      let wnTemp = bb.wn;
+      while (wnTemp > 0n) {
+        const idx = (wnTemp & -wnTemp).toString(2).length - 1;
+        const file = idx % 8;
+        const rank = Math.floor(idx / 8);
+        
+        const isOutpostRank = rank >= 3 && rank <= 5;
+        if (isOutpostRank && file >= 2 && file <= 5) {
+          let isSupported = false;
+          if (rank > 0) {
+            if (file > 0 && (bb.wp & (1n << BigInt((file - 1) + (rank - 1) * 8))) > 0n) isSupported = true;
+            if (file < 7 && (bb.wp & (1n << BigInt((file + 1) + (rank - 1) * 8))) > 0n) isSupported = true;
           }
-
-          // Knight outpost bonus
-          if (cell.type === 'n') {
-            const isWhite = cell.color === 'w';
-            const isOutpostRank = isWhite ? (r >= 2 && r <= 4) : (r >= 3 && r <= 5);
-            if (isOutpostRank && (c >= 2 && c <= 5)) {
-              let isSupported = false;
-              if (isWhite) {
-                if (c > 0 && board[r + 1]?.[c - 1]?.type === 'p' && board[r + 1]?.[c - 1]?.color === 'w') isSupported = true;
-                if (c < 7 && board[r + 1]?.[c + 1]?.type === 'p' && board[r + 1]?.[c + 1]?.color === 'w') isSupported = true;
-              } else {
-                if (c > 0 && board[r - 1]?.[c - 1]?.type === 'p' && board[r - 1]?.[c - 1]?.color === 'b') isSupported = true;
-                if (c < 7 && board[r - 1]?.[c + 1]?.type === 'p' && board[r - 1]?.[c + 1]?.color === 'b') isSupported = true;
-              }
-              if (isSupported) {
-                dynamicPositionalExtras += sign * 40;
-              }
-            }
-          }
-
-          // Tapered Passed Pawns: More valuable as the board clears up
-          if (cell.type === 'p') {
-            const isWhite = cell.color === 'w';
-            let isPassed = true;
-            if (isWhite) {
-              for (let pr = 0; pr < r; pr++) {
-                if (board[pr]?.[c]?.type === 'p' && board[pr]?.[c]?.color === 'b') isPassed = false;
-                if (c > 0 && board[pr]?.[c - 1]?.type === 'p' && board[pr]?.[c - 1]?.color === 'b') isPassed = false;
-                if (c < 7 && board[pr]?.[c + 1]?.type === 'p' && board[pr]?.[c + 1]?.color === 'b') isPassed = false;
-              }
-              if (isPassed) {
-                const mgBonus = (7 - r) * 15;
-                const egBonus = (7 - r) * 30;
-                const bonus = phase * mgBonus + (1 - phase) * egBonus;
-                dynamicPositionalExtras += bonus;
-              }
-            } else {
-              for (let pr = r + 1; pr < 8; pr++) {
-                if (board[pr]?.[c]?.type === 'p' && board[pr]?.[c]?.color === 'w') isPassed = false;
-                if (c > 0 && board[pr]?.[c - 1]?.type === 'p' && board[pr]?.[c - 1]?.color === 'w') isPassed = false;
-                if (c < 7 && board[pr]?.[c + 1]?.type === 'p' && board[pr]?.[c + 1]?.color === 'w') isPassed = false;
-              }
-              if (isPassed) {
-                const mgBonus = r * 15;
-                const egBonus = r * 30;
-                const bonus = phase * mgBonus + (1 - phase) * egBonus;
-                dynamicPositionalExtras -= bonus;
-              }
-            }
+          if (isSupported) {
+            dynamicPositionalExtras += 40;
           }
         }
+        wnTemp &= wnTemp - 1n;
+      }
+
+      // Black Knights Outpost
+      let bnTemp = bb.bn;
+      while (bnTemp > 0n) {
+        const idx = (bnTemp & -bnTemp).toString(2).length - 1;
+        const file = idx % 8;
+        const rank = Math.floor(idx / 8);
+        
+        const isOutpostRank = rank >= 2 && rank <= 4;
+        if (isOutpostRank && file >= 2 && file <= 5) {
+          let isSupported = false;
+          if (rank < 7) {
+            if (file > 0 && (bb.bp & (1n << BigInt((file - 1) + (rank + 1) * 8))) > 0n) isSupported = true;
+            if (file < 7 && (bb.bp & (1n << BigInt((file + 1) + (rank + 1) * 8))) > 0n) isSupported = true;
+          }
+          if (isSupported) {
+            dynamicPositionalExtras -= 40;
+          }
+        }
+        bnTemp &= bnTemp - 1n;
       }
     }
     if (this.config.difficulty === 'intermediate') {
       dynamicPositionalExtras *= 0.5;
     }
-    score += dynamicPositionalExtras;
+    score += dynamicPositionalExtras * positionalMult;
 
     // Thematic Eval Modifiers
     if (this.config.evalMode === 'komodo_mcts') {
@@ -516,17 +594,16 @@ export class ChessEngine {
       score += (kingSafetyExtras * 1.6);
     } else if (this.config.evalMode === 'nova_chess') {
       score += (dynamicPositionalExtras * 0.4);
+    } else if (this.config.evalMode === 'lc0_neural') {
+      const centerFactor = (whitePawnsInFile[3] + whitePawnsInFile[4]) - (blackPawnsInFile[3] + blackPawnsInFile[4]);
+      score += centerFactor * 25 + (whiteBishops >= 2 ? 40 : 0) - (blackBishops >= 2 ? 40 : 0);
+      score += dynamicPositionalExtras * 0.6;
+    } else if (this.config.evalMode === 'torch_hybrid') {
+      score += kingSafetyExtras * 1.2; 
+      score += dynamicPositionalExtras * 0.5;
+      score += (turn === 'w' ? 1 : -1) * activeMoves * 3.0;
     } else if (this.config.evalMode === 'neuralcore_rl_selfplay') {
-      const centerSquares = ['d4', 'd5', 'e4', 'e5'];
-      let rlBonus = 0;
-      for (const sq of centerSquares) {
-        const rowCode = sq.charCodeAt(0) - 97;
-        const colCode = parseInt(sq.charAt(1)) - 1;
-        const cell = board[rowCode]?.[colCode];
-        if (cell) {
-          rlBonus += cell.color === 'w' ? 25 : -25;
-        }
-      }
+      const rlBonus = (popCount(bb.whitePieces & CENTER_CORE_MASK) - popCount(bb.blackPieces & CENTER_CORE_MASK)) * 25;
       score += rlBonus * (1 + trainingProgress);
     }
 
@@ -702,6 +779,33 @@ export class ChessEngine {
       return { score: qScore, bestMove: null };
     }
 
+    // Null Move Pruning (NMP)
+    if (depth >= 3 && !chess.inCheck() && ply > 0 && this.hasNonPawnPieces(chess)) {
+      const fen = chess.fen();
+      const tokens = fen.split(' ');
+      tokens[1] = tokens[1] === 'w' ? 'b' : 'w';
+      tokens[3] = '-'; // Clear en-passant square
+      const nullFen = tokens.join(' ');
+      
+      const prevTimeLimitExceeded = this.timeLimitExceeded;
+      
+      chess.load(nullFen);
+      const r = 2; // reduction factor
+      const reducedDepth = Math.max(1, depth - 1 - r);
+      
+      const result = this.minimax(chess, reducedDepth, alpha, beta, !isMaximizing, trainingProgress, ply + 1);
+      chess.load(fen); // Restore
+      
+      if (!this.timeLimitExceeded && !prevTimeLimitExceeded) {
+        if (isMaximizing && result.score >= beta) {
+          return { score: beta, bestMove: null };
+        }
+        if (!isMaximizing && result.score <= alpha) {
+          return { score: alpha, bestMove: null };
+        }
+      }
+    }
+
     const rawMoves = chess.moves({ verbose: true });
     
     // Mate / Draw detection (highly optimized, avoids redundant generation)
@@ -735,6 +839,12 @@ export class ChessEngine {
     let originalBeta = beta;
     let movesSearched = 0;
 
+    // Check Extension Heuristic: if we are in check, search deeper
+    let nextDepth = depth - 1;
+    if (chess.inCheck() && ply < 48) {
+      nextDepth = depth;
+    }
+
     if (isMaximizing) {
       let maxScore = -Infinity;
       for (const m of sortedMoves) {
@@ -753,12 +863,12 @@ export class ChessEngine {
           
           // Re-search at full depth if reduced search was promising (failed high)
           if (score > alpha) {
-            const resultFull = this.minimax(chess, depth - 1, alpha, beta, false, trainingProgress, ply + 1);
+            const resultFull = this.minimax(chess, nextDepth, alpha, beta, false, trainingProgress, ply + 1);
             score = resultFull.score;
           }
         } else {
           // Normal search
-          const result = this.minimax(chess, depth - 1, alpha, beta, false, trainingProgress, ply + 1);
+          const result = this.minimax(chess, nextDepth, alpha, beta, false, trainingProgress, ply + 1);
           score = result.score;
         }
 
@@ -827,11 +937,11 @@ export class ChessEngine {
           score = result.score;
           
           if (score < beta) {
-            const resultFull = this.minimax(chess, depth - 1, alpha, beta, true, trainingProgress, ply + 1);
+            const resultFull = this.minimax(chess, nextDepth, alpha, beta, true, trainingProgress, ply + 1);
             score = resultFull.score;
           }
         } else {
-          const result = this.minimax(chess, depth - 1, alpha, beta, true, trainingProgress, ply + 1);
+          const result = this.minimax(chess, nextDepth, alpha, beta, true, trainingProgress, ply + 1);
           score = result.score;
         }
 
@@ -923,6 +1033,12 @@ export class ChessEngine {
     }
     if (this.config.evalMode === 'nova_chess') {
       return this.searchNovaChess(chess, trainingProgress);
+    }
+    if (this.config.evalMode === 'lc0_neural') {
+      return this.searchLc0Neural(chess, trainingProgress);
+    }
+    if (this.config.evalMode === 'torch_hybrid') {
+      return this.searchTorchHybrid(chess, trainingProgress);
     }
     if (this.config.evalMode === 'pantheon_fusion') {
       return this.searchPantheonFusion(chess, trainingProgress);
@@ -1371,12 +1487,60 @@ export class ChessEngine {
 
     // Reset move ordering helpers for this path
     this.killerMoves = [];
+    for (let i = 0; i < 64; i++) {
+      this.killerMoves[i] = [];
+    }
     this.historyMoves = {};
 
-    // 1. Run real alpha-beta minimax search using the shared transposition table!
-    const searchResult = this.minimax(chess, targetDepth, -Infinity, Infinity, isWhite, trainingProgress, 0);
-    const bestMove = searchResult.bestMove || moves[0];
-    const scoreVal = searchResult.score;
+    // 1. Run real iterative deepening minimax search with Aspiration Windows
+    let finalBestMove: any = null;
+    let finalScore = 0;
+    let prevScore = 0;
+    let alpha = -Infinity;
+    let beta = Infinity;
+
+    for (let currentDepth = 1; currentDepth <= targetDepth; currentDepth++) {
+      // If we already spent 60% of our limit, do not start a deeper level
+      const timeLimit = this.config.timeLimitMs || 1000;
+      if (Date.now() - this.startTime > timeLimit * 0.6) {
+        break;
+      }
+
+      // Aspiration Windows
+      if (currentDepth >= 3) {
+        const delta = 45; // 45 centipawns window
+        alpha = prevScore - delta;
+        beta = prevScore + delta;
+      }
+
+      let result = this.minimax(chess, currentDepth, alpha, beta, isWhite, trainingProgress, 0);
+
+      // Aspiration Window Fail: Re-search with a full window
+      if (currentDepth >= 3 && (result.score <= alpha || result.score >= beta)) {
+        alpha = -Infinity;
+        beta = Infinity;
+        result = this.minimax(chess, currentDepth, alpha, beta, isWhite, trainingProgress, 0);
+      }
+
+      if (!this.timeLimitExceeded && result.bestMove) {
+        finalBestMove = result.bestMove;
+        finalScore = result.score;
+        prevScore = result.score;
+      } else if (currentDepth === 1) {
+        finalBestMove = result.bestMove || moves[0];
+        finalScore = result.score;
+      } else {
+        break;
+      }
+
+      // Found a forced checkmate, no need to search deeper
+      if (Math.abs(finalScore) > 90000) {
+        break;
+      }
+    }
+
+    const bestMove = finalBestMove || moves[0];
+    const scoreVal = finalScore;
 
     // 2. Score candidate moves based on transposition table values
     const scoredMoves = moves.map(m => {
@@ -1563,6 +1727,56 @@ export class ChessEngine {
   }
 
   /**
+   * Search implementation representing Leela Chess Zero's Deep Positional Neural Network
+   */
+  public searchLc0Neural(chess: Chess, trainingProgress: number = 0.5): {
+    bestMove: any;
+    score: number;
+    depth: number;
+    nodes: number;
+    nps: number;
+    pv: string[];
+    leezaMctsNodes: any[];
+    leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
+    policyMap: Record<string, number>;
+  } {
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      6, // base depth of 6, scales to 8 on expert/GM difficulty
+      160000,
+      1400,
+      (c) => this.evaluate(c, trainingProgress),
+      "LC0-MCTS"
+    );
+  }
+
+  /**
+   * Search implementation representing Chess.com's Torch Neural Hybrid Search
+   */
+  public searchTorchHybrid(chess: Chess, trainingProgress: number = 0.5): {
+    bestMove: any;
+    score: number;
+    depth: number;
+    nodes: number;
+    nps: number;
+    pv: string[];
+    leezaMctsNodes: any[];
+    leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
+    policyMap: Record<string, number>;
+  } {
+    return this.searchDeepThemed(
+      chess,
+      trainingProgress,
+      6, // base depth of 6, scales to 8 on expert/GM difficulty
+      195000,
+      1800,
+      (c) => this.evaluate(c, trainingProgress),
+      "TORCH-AB"
+    );
+  }
+
+  /**
    * Search implementation representing the Grand Fusion Pantheon Ensemble
    */
   public searchPantheonFusion(chess: Chess, trainingProgress: number = 0.5): {
@@ -1596,6 +1810,8 @@ export class ChessEngine {
     const resKomodo = this.searchKomodoDragonMCTS(new Chess(chess.fen()), trainingProgress);
     const resPatricia = this.searchPatriciaNeural(new Chess(chess.fen()), trainingProgress);
     const resNova = this.searchNovaChess(new Chess(chess.fen()), trainingProgress);
+    const resLc0 = this.searchLc0Neural(new Chess(chess.fen()), trainingProgress);
+    const resTorch = this.searchTorchHybrid(new Chess(chess.fen()), trainingProgress);
 
     const candidates: Record<string, {
       move: any;
@@ -1605,10 +1821,12 @@ export class ChessEngine {
     }> = {};
 
     const engines = [
-      { name: 'Stockfish NNUE', res: resStockfish, weight: 1.5 },
-      { name: 'Leeza Chess Zero', res: resLeeza, weight: 1.4 },
-      { name: 'Komodo Dragon', res: resKomodo, weight: 1.4 },
+      { name: 'Stockfish NNUE', res: resStockfish, weight: 1.6 },
+      { name: 'Leela Chess Zero', res: resLc0, weight: 1.5 },
+      { name: 'Torch Hybrid', res: resTorch, weight: 1.5 },
+      { name: 'Komodo Dragon', res: resKomodo, weight: 1.3 },
       { name: 'Patricia Neural', res: resPatricia, weight: 1.2 },
+      { name: 'Leeza Chess Zero', res: resLeeza, weight: 1.1 },
       { name: 'Nova Chess', res: resNova, weight: 1.0 }
     ];
 
@@ -1645,7 +1863,7 @@ export class ChessEngine {
         avgScore = this.evaluate(copy, trainingProgress);
       }
       
-      const totalWeights = 1.5 + 1.4 + 1.4 + 1.2 + 1.0;
+      const totalWeights = 1.6 + 1.5 + 1.5 + 1.3 + 1.2 + 1.1 + 1.0;
       const priorPct = cand ? sumWeights / totalWeights : 0.02;
 
       return {
@@ -1692,11 +1910,13 @@ export class ChessEngine {
     };
   }
 
+
   /**
    * Search implementation representing NeuralCore's Autonomous Self-Play RL Engine.
    * Simulates real-time reinforcement learning by computing Monte Carlo Tree Search policy 
    * distribution, calculating Temporal Difference (TD) target updates, and saving weight updates.
    */
+
   public searchNeuralCoreRLSelfPlay(chess: Chess, trainingProgress: number = 0.5): {
     bestMove: any;
     score: number;
@@ -1708,18 +1928,27 @@ export class ChessEngine {
     leezaValueHead: { whiteWin: number; draw: number; blackWin: number };
     policyMap: Record<string, number>;
   } {
-    // Save reinforcement learning training telemetry to local storage
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        const stored = window.localStorage.getItem('neuralcore_rl_experience');
-        const currentExp = stored ? JSON.parse(stored) : { totalEpisodes: 0, rewardsGathered: 0 };
-        currentExp.totalEpisodes += 1;
-        currentExp.rewardsGathered += 1.0;
-        window.localStorage.setItem('neuralcore_rl_experience', JSON.stringify(currentExp));
+    // Save reinforcement learning training telemetry to Firestore
+    (async () => {
+      try {
+        const docRef = doc(db, 'rl_experience', 'global');
+        const docSnap = await getDoc(docRef);
+        
+        if (docSnap.exists()) {
+          await updateDoc(docRef, {
+            totalEpisodes: increment(1),
+            rewardsGathered: increment(1.0)
+          });
+        } else {
+          await setDoc(docRef, {
+            totalEpisodes: 1,
+            rewardsGathered: 1.0
+          });
+        }
+      } catch (e) {
+        console.error("Error updating RL experience:", e);
       }
-    } catch (e) {
-      // Ignored in non-browser env
-    }
+    })();
 
     return this.searchDeepThemed(
       chess,
@@ -1730,5 +1959,18 @@ export class ChessEngine {
       (c) => this.evaluate(c, trainingProgress),
       "TD-RL"
     );
+  }
+
+  /**
+   * Simplified endgame tablebase lookup for 3-5 piece endgames
+   */
+  private getTablebaseEvaluation(chess: Chess): number | null {
+    const pieces = chess.board().flat().filter(p => p !== null).length;
+    if (pieces > 5) return null;
+
+    // Simple tablebase logic: material evaluation
+    // If only king+rook vs king, it's a win, etc.
+    // Placeholder for real Syzygy lookup logic
+    return null; 
   }
 }

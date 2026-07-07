@@ -26,7 +26,7 @@ export interface EnginePersonality {
   pawnStructureWeight: number; // Pawn structure weight
 }
 
-export type EvaluationMode = 'traditional' | 'neural' | 'hybrid' | 'leeza_mcts' | 'stockfish_nnue' | 'komodo_mcts' | 'patricia_neural' | 'nova_chess' | 'pantheon_fusion' | 'neuralcore_rl_selfplay';
+export type EvaluationMode = 'traditional' | 'neural' | 'hybrid' | 'leeza_mcts' | 'stockfish_nnue' | 'komodo_mcts' | 'patricia_neural' | 'nova_chess' | 'pantheon_fusion' | 'neuralcore_rl_selfplay' | 'lc0_neural' | 'torch_hybrid';
 
 export interface EngineConfig {
   maxDepth: number;
@@ -47,6 +47,12 @@ export interface EngineConfig {
     bishopPairBonus?: number;
     pstWeights?: number;
   };
+}
+
+export interface DuelConfig {
+  engine1: EngineConfig;
+  engine2: EngineConfig;
+  enabled: boolean;
 }
 
 export interface TrainingGame {

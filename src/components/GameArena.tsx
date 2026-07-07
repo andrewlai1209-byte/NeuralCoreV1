@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Chess } from 'chess.js';
 import { Chessboard } from './Chessboard';
+import { EngineDuelArena } from './EngineDuelArena';
 import { ChessEngine, PERSONALITIES } from '../engine';
 import { EngineConfig, EnginePersonalityId } from '../types';
 import { RotateCcw, ArrowLeftRight, HelpCircle, User, Cpu, AlertTriangle, Play, RefreshCw, Volume2, Shield, Clock, BookOpen, Timer, Brain, Zap, Scale, Sliders, Settings2, CheckCircle2, Download, Award, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Undo2 } from 'lucide-react';
@@ -200,6 +201,7 @@ export const GameArena: React.FC = () => {
   } | null>(null);
 
   const [flipped, setFlipped] = useState(false);
+  const [duelMode, setDuelMode] = useState(false);
   const [gameResult, setGameResult] = useState<string | null>(null);
   const [highlightSquares, setHighlightSquares] = useState<string[]>([]);
   const [selectedEndgameId, setSelectedEndgameId] = useState<string>('normal');
@@ -615,10 +617,10 @@ export const GameArena: React.FC = () => {
   const matchedBook = findBookMove(chess.history());
 
   // Estimated Chess ELO calculation based on config
-  const getEstimatedElo = () => {
+  const getEstimatedElo = (cfg: EngineConfig) => {
     const baseElo = 1500;
-    const depthBonus = (config.maxDepth - 1) * 200;
-    const modeBonus = config.evalMode === 'hybrid' ? 100 : config.evalMode === 'neural' ? 50 : 0;
+    const depthBonus = (cfg.maxDepth - 1) * 200;
+    const modeBonus = cfg.evalMode === 'torch_hybrid' ? 1800 : cfg.evalMode === 'lc0_neural' ? 2000 : cfg.evalMode === 'hybrid' ? 100 : cfg.evalMode === 'neural' ? 50 : 0;
     return baseElo + depthBonus + modeBonus;
   };
 
@@ -691,7 +693,7 @@ export const GameArena: React.FC = () => {
                   {flipped ? 'User (Player)' : currentPersonality.name}
                 </div>
                 <div className="text-[10px] text-slate-400 font-medium">
-                  {flipped ? 'Grandmaster Rank' : `Engine Level ${config.maxDepth} | ELO ${getEstimatedElo()}`}
+                  {flipped ? 'Grandmaster Rank' : `Engine Level ${config.maxDepth} | ELO ${getEstimatedElo(config)}`}
                 </div>
               </div>
             </div>
@@ -703,6 +705,12 @@ export const GameArena: React.FC = () => {
                   Thinking
                 </span>
               )}
+              <button
+                onClick={() => setDuelMode(!duelMode)}
+                className={`text-xs px-2 py-1 rounded font-bold ${duelMode ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+              >
+                {duelMode ? 'Duel Mode ON' : 'Duel Mode OFF'}
+              </button>
               {/* Top Clock (Black) */}
               <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-mono text-sm font-bold shadow-inner transition-all ${
                 chess.turn() === 'b' && timerActive && !gameResult
@@ -742,11 +750,12 @@ export const GameArena: React.FC = () => {
             <Chessboard
               fen={displayFen}
               onMove={handlePlayerMove}
-              interactive={!isEngineThinking && !gameResult && viewIndex === -1}
+              interactive={!isEngineThinking && !gameResult && viewIndex === -1 && !duelMode}
               flipped={flipped}
               highlightSquares={highlightSquares}
               engineLastMoveSquares={engineLastMoveSquares}
             />
+            {duelMode && <div className="absolute inset-0 z-10 bg-slate-900/90"><EngineDuelArena config1={config} config2={config} /></div>}
             {gameResult && (
               <div className="absolute inset-0 bg-slate-950/80 rounded-xl backdrop-blur-sm flex flex-col items-center justify-center p-6 z-30 border border-slate-700/50 shadow-2xl">
                 <AlertTriangle className="w-12 h-12 text-amber-400 mb-3 animate-pulse" />
@@ -843,7 +852,7 @@ export const GameArena: React.FC = () => {
                   {flipped ? currentPersonality.name : 'User (Player)'}
                 </div>
                 <div className="text-[10px] text-slate-400 font-medium">
-                  {flipped ? `Engine Level ${config.maxDepth} | ELO ${getEstimatedElo()}` : 'Grandmaster Rank'}
+                  {flipped ? `Engine Level ${config.maxDepth} | ELO ${getEstimatedElo(config)}` : 'Grandmaster Rank'}
                 </div>
               </div>
             </div>
@@ -1203,13 +1212,11 @@ export const GameArena: React.FC = () => {
                 onChange={(e) => setConfig({ ...config, evalMode: e.target.value as any })}
                 className="w-full bg-slate-950 text-indigo-400 font-mono text-xs rounded-lg border border-slate-800 px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer"
               >
-                <option value="pantheon_fusion">🔥 NeuralCore Grand Fusion (5-in-1 Ensemble)</option>
+                <option value="pantheon_fusion">🔥 NeuralCore Grand Fusion (7-in-1 Elite Ensemble)</option>
                 <option value="neuralcore_rl_selfplay">🤖 NeuralCore RL Self-Play (Self-Learning Engine)</option>
-                <option value="leeza_mcts">🧠 NeuralCore MCTS (Leeza MCTS)</option>
-                <option value="stockfish_nnue">🐟 NeuralCore + Stockfish Distilled (Ultra Deep)</option>
-                <option value="komodo_mcts">🦎 NeuralCore + Komodo Distilled (Positional MCTS)</option>
-                <option value="patricia_neural">🦅 NeuralCore + Patricia Distilled (Sharp Neural)</option>
-                <option value="nova_chess">🌟 NeuralCore + Nova Chess Distilled (Elegant Tactical)</option>
+                <option value="lc0_neural">🧠 Leela Chess Zero Lc0 (Deep Positional Neural)</option>
+                <option value="torch_hybrid">⚡ Torch Engine (High Mobility Tactical Hybrid)</option>
+
                 <option value="hybrid">✨ NeuralCore Hybrid (Core + Minimax)</option>
                 <option value="neural">🦾 NeuralCore Neural (Standard Policy Head)</option>
                 <option value="traditional">📟 NeuralCore Traditional (Legacy Minimax)</option>

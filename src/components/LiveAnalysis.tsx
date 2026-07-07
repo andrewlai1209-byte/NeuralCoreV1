@@ -365,7 +365,7 @@ export const LiveAnalysis: React.FC = () => {
           </div>
 
           {/* MCTS Playouts Search Tree Thread Viewer (Phase A) */}
-          {(['leeza_mcts', 'stockfish_nnue', 'komodo_mcts', 'patricia_neural', 'nova_chess', 'pantheon_fusion', 'neuralcore_rl_selfplay'].includes(config.evalMode)) && leezaMctsNodes.length > 0 && (
+          {(['leeza_mcts', 'stockfish_nnue', 'komodo_mcts', 'patricia_neural', 'nova_chess', 'lc0_neural', 'torch_hybrid', 'pantheon_fusion', 'neuralcore_rl_selfplay'].includes(config.evalMode)) && leezaMctsNodes.length > 0 && (
             <div className="w-full max-w-[536px] mt-4 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
               <div className="flex items-center justify-between border-b border-slate-850 pb-2 mb-3">
                 <span className="text-xs font-extrabold text-amber-400 tracking-wider uppercase font-mono flex items-center gap-1.5">
@@ -375,7 +375,9 @@ export const LiveAnalysis: React.FC = () => {
                   {config.evalMode === 'komodo_mcts' && 'NeuralCore + Komodo Distilled MCTS Tree'}
                   {config.evalMode === 'patricia_neural' && 'NeuralCore + Patricia Distilled Tactical Branches'}
                   {config.evalMode === 'nova_chess' && 'NeuralCore + Nova Chess Distilled Elegant Tree'}
-                  {config.evalMode === 'pantheon_fusion' && 'NeuralCore Pantheon Grand Fusion Votes'}
+                  {config.evalMode === 'lc0_neural' && 'Leela Chess Zero Lc0 Deep Neural MCTS'}
+                  {config.evalMode === 'torch_hybrid' && 'Chess.com Torch Neural Hybrid Alpha-Beta Paths'}
+                  {config.evalMode === 'pantheon_fusion' && 'NeuralCore Pantheon 7-in-1 Grand Fusion Votes'}
                   {config.evalMode === 'neuralcore_rl_selfplay' && 'NeuralCore Autonomous Self-Play Live Learning Tree'}
                 </span>
                 <span className="text-[10px] text-slate-400 font-mono">
@@ -388,14 +390,14 @@ export const LiveAnalysis: React.FC = () => {
                     <tr className="text-slate-500 border-b border-slate-850 pb-1">
                       <th className="pb-1 font-bold">MOVE</th>
                       <th className="pb-1 text-right font-bold">
-                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'EPISODES' : config.evalMode === 'pantheon_fusion' ? 'VOTES' : ['stockfish_nnue', 'patricia_neural', 'nova_chess'].includes(config.evalMode) ? 'DEPTH (PLY)' : 'VISITS (N)'}
+                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'EPISODES' : config.evalMode === 'pantheon_fusion' ? 'VOTES' : ['stockfish_nnue', 'patricia_neural', 'nova_chess', 'torch_hybrid'].includes(config.evalMode) ? 'DEPTH (PLY)' : 'VISITS (N)'}
                       </th>
                       <th className="pb-1 text-right font-bold">
                         {config.evalMode === 'neuralcore_rl_selfplay' ? 'REWARD' : config.evalMode === 'pantheon_fusion' ? 'COMPOSITE VAL' : 'Q-VALUE / EVAL'}
                       </th>
                       <th className="pb-1 text-right font-bold">CONFIDENCE</th>
                       <th className="pb-1 text-right font-bold text-amber-400">
-                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'LEARNED UCT' : config.evalMode === 'pantheon_fusion' ? 'CONSENSUS / VOTERS' : ['stockfish_nnue', 'patricia_neural', 'nova_chess'].includes(config.evalMode) ? 'BOUND' : 'PUCT'}
+                        {config.evalMode === 'neuralcore_rl_selfplay' ? 'LEARNED UCT' : config.evalMode === 'pantheon_fusion' ? 'CONSENSUS / VOTERS' : ['stockfish_nnue', 'patricia_neural', 'nova_chess', 'torch_hybrid'].includes(config.evalMode) ? 'BOUND' : 'PUCT'}
                       </th>
                     </tr>
                   </thead>
@@ -564,8 +566,10 @@ export const LiveAnalysis: React.FC = () => {
                   }}
                   className="bg-slate-950 text-indigo-400 font-mono text-xs rounded border border-slate-800 px-2 py-1 focus:outline-none focus:border-indigo-500"
                 >
-                  <option value="pantheon_fusion">🔥 NeuralCore Grand Fusion (5-in-1 Ensemble)</option>
+                  <option value="pantheon_fusion">🔥 NeuralCore Grand Fusion (7-in-1 Elite Ensemble)</option>
                   <option value="neuralcore_rl_selfplay">🤖 NeuralCore RL Self-Play (Self-Learning Engine)</option>
+                  <option value="lc0_neural">🧠 Leela Chess Zero Lc0 (Deep Positional Neural)</option>
+                  <option value="torch_hybrid">⚡ Torch Engine (High Mobility Tactical Hybrid)</option>
                   <option value="leeza_mcts">🧠 NeuralCore MCTS (Leeza MCTS)</option>
                   <option value="stockfish_nnue">🐟 NeuralCore + Stockfish Distilled (Ultra Deep)</option>
                   <option value="komodo_mcts">🦎 NeuralCore + Komodo Distilled (Positional MCTS)</option>

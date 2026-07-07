@@ -141,7 +141,7 @@ export const Dashboard: React.FC = () => {
     optimizer: 'Adam' as 'Adam' | 'SGD' | 'RMSprop',
     architecture: 'ResNet-20' as 'ResNet-20' | 'ResNet-40' | 'ViT-Transformer',
     epochsToRun: 3,
-    trainingTarget: 'pantheon_fusion' as 'stockfish' | 'komodo' | 'patricia' | 'nova' | 'pantheon_fusion' | 'neuralcore_rl_selfplay'
+    trainingTarget: 'pantheon_fusion' as 'stockfish' | 'komodo' | 'patricia' | 'nova' | 'lc0' | 'torch' | 'pantheon_fusion' | 'neuralcore_rl_selfplay'
   });
   const [isTraining, setIsTraining] = useState(false);
   const [gradientStep, setGradientStep] = useState(0);
@@ -593,6 +593,8 @@ export const Dashboard: React.FC = () => {
                 <option value="pantheon_fusion">🔥 Grand Fusion Pantheon (Multi-Engine Composite Target)</option>
                 <option value="neuralcore_rl_selfplay">🤖 NeuralCore RL Self-Play (Autonomous Self-Learning)</option>
                 <option value="stockfish">🐟 Stockfish NNUE (Deep Tactical Generalization)</option>
+                <option value="lc0">🧠 Leela Chess Zero Lc0 (Deep Positional Neural)</option>
+                <option value="torch">⚡ Torch Engine (High Mobility Tactical Hybrid)</option>
                 <option value="komodo">🦎 Komodo Dragon (Deep Positional MCTS)</option>
                 <option value="patricia">🦅 Patricia Neural (Ultra-Sharp Tactician)</option>
                 <option value="nova">🌟 Nova Chess (Elegant Creative Combos)</option>

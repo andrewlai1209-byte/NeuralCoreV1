@@ -6,11 +6,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Chess, Square } from 'chess.js';
 import { Chessboard } from './Chessboard';
-import { ChessEngine } from '../engine';
+import { ChessEngine, TRAINING_PROFILES } from '../engine';
 import { 
   Globe, Users, MessageSquare, Send, Brain, Cpu, TrendingUp, 
   X, Award, Terminal as TerminalIcon, ArrowRight, Clock, ShieldCheck, 
-  RefreshCw, CheckCircle, Flame, Swords
+  RefreshCw, CheckCircle, Flame, Swords, Target
 } from 'lucide-react';
 
 const TIME_CONTROLS = {
@@ -103,6 +103,7 @@ export const GlobalArena: React.FC = () => {
   const [trainingProgress, setTrainingProgress] = useState(0);
   const [trainingMetrics, setTrainingMetrics] = useState({ policyLoss: 0.24, valueLoss: 0.18, accuracy: 52 });
   const [savedTraining, setSavedTraining] = useState(false);
+  const [mimicTarget, setMimicTarget] = useState<string>('houdini');
   const trainingEndRef = useRef<HTMLDivElement>(null);
 
   // Local ELO display state (loads from localStorage)
@@ -455,11 +456,14 @@ export const GlobalArena: React.FC = () => {
     setShowTraining(true);
     setSavedTraining(false);
     setTrainingProgress(0);
+    
+    const targetName = mimicTarget.toUpperCase();
     setTrainingLogs([
-      `[UCI-Init] Mounting Aetheris Neural Network core...`,
+      `[UCI-Init] Mounting NeuralCore Backpropagation Network core...`,
       `[Hardware] Allocating client CPU node search threads...`,
-      `[Memory] Parsing Game History: ${chess.history().length} moves completed.`,
-      `[Target] Winner orientation: ${gameResult?.includes('You win') ? 'PLAYER_WIN' : 'OPPONENT_WIN'}`
+      `[Style Mimicry] Selecting Target Style Model: ${targetName}`,
+      `[Style Mimicry] Initializing reinforcement training loop for style absorption...`,
+      `[Memory] Parsing Game History: ${chess.history().length} moves completed.`
     ]);
 
     let step = 0;
@@ -470,19 +474,27 @@ export const GlobalArena: React.FC = () => {
       if (step === 2) {
         setTrainingLogs(prev => [...prev, `[Optimizer] SGD learning rate initialized to 0.005 (decaying).`]);
       } else if (step === 4) {
-        setTrainingLogs(prev => [...prev, `[Evaluator] Extracting critical board state features...`, `  -> Isolated pawns: detected`, `  -> Outpost Knights: scanning squares d5, e5`]);
+        setTrainingLogs(prev => [...prev, `[Evaluator] Extracting critical board state features...`, `  -> Isolated pawns: scanning bitboards`, `  -> Outpost Knights: scanning squares d5, e5`]);
       } else if (step === 6) {
-        setTrainingLogs(prev => [...prev, `[Backprop] Computing Policy-Value network gradients.`, `  -> Cross-Entropy Loss: 0.485 -> 0.382`, `  -> Value MSE: 0.221 -> 0.165`]);
-        setTrainingMetrics({ policyLoss: 0.18, valueLoss: 0.12, accuracy: 56 });
+        setTrainingLogs(prev => [...prev, `[Style Mimicry] Synthesizing ${targetName} style characteristics:`]);
+      } else if (step === 8) {
+        if (mimicTarget === 'houdini' || mimicTarget === 'fatfriz2' || mimicTarget === 'critter' || mimicTarget === 'asmfish') {
+          setTrainingLogs(prev => [...prev, `  -> Offense multiplier: absorption rate 95% (Extreme Aggression)`, `  -> King Safety weight adjusted: -12.4% (aggressive sacrifice allowance)`]);
+        } else if (mimicTarget === 'slowchess' || mimicTarget === 'caissa' || mimicTarget === 'rubichess') {
+          setTrainingLogs(prev => [...prev, `  -> Positional squeeze multiplier: absorption rate 98% (Squeeze Play)`, `  -> Pawn Structure preservation factor: +22.5% (High Durability)`]);
+        } else {
+          setTrainingLogs(prev => [...prev, `  -> Positional & tactical weights balanced: absorption rate 92%`, `  -> Center control bias: +15.2% (Classical balance)`]);
+        }
       } else if (step === 10) {
-        setTrainingLogs(prev => [...prev, `[Reinforcement] Adjusting material & positional evaluation weights:`]);
+        setTrainingLogs(prev => [...prev, `[Backprop] Computing Policy-Value network gradients.`, `  -> Cross-Entropy Loss: 0.485 -> 0.321`, `  -> Value MSE: 0.221 -> 0.144`]);
+        setTrainingMetrics({ policyLoss: 0.14, valueLoss: 0.09, accuracy: 64 });
       } else if (step === 12) {
-        setTrainingLogs(prev => [...prev, `  -> PST Knight central occupancy weight: +4.8% (gain)`, `  -> King Exposure liability factor: +2.1% (refined)`]);
+        setTrainingLogs(prev => [...prev, `[Reinforcement] Adjusting material & positional evaluation weights in local storage.`]);
       } else if (step === 15) {
         setTrainingLogs(prev => [...prev, `[Model Checkpoint] Consolidating neural weights & saving to local cache...`]);
       } else if (step === 18) {
-        setTrainingLogs(prev => [...prev, `[Verification] Standard Minimax test vs Depth 4 engine:`, `  -> Play-match simulation: 94% win correlation.`, `  -> Local ELO estimated adjustment: +12 ELO points.`]);
-        setTrainingMetrics({ policyLoss: 0.09, valueLoss: 0.05, accuracy: 68 });
+        setTrainingLogs(prev => [...prev, `[Verification] Standard Minimax test vs Stockfish:`, `  -> Style alignment correlation: 98.4% match.`, `  -> Local ELO estimated adjustment: +15 ELO points.`]);
+        setTrainingMetrics({ policyLoss: 0.05, valueLoss: 0.03, accuracy: 78 });
       } else if (step >= 20) {
         // Complete training, update actual localStorage weights
         clearInterval(interval);
@@ -499,29 +511,71 @@ export const GlobalArena: React.FC = () => {
         pstMultiplier: 1.0,
         mobilityMultiplier: 1.0,
         neuralMultiplier: 1.0,
-        eloOffset: 0
+        eloOffset: 0,
+        styleWeights: { aggression: 0.5, positional: 0.5, mobility: 0.5, kingSafety: 0.5 }
       };
 
       if (stored) {
-        currentWeights = JSON.parse(stored);
+        try {
+          currentWeights = JSON.parse(stored);
+        } catch {
+          // Fallback to defaults
+        }
       }
 
-      // Mutate weights slightly based on game result
+      // Mutate weights slightly based on game result and selected mimic target
       const winFactor = gameResult?.includes('You win') ? 1 : -1;
       
-      currentWeights.materialWeights.p += winFactor * 0.01;
-      currentWeights.materialWeights.n += winFactor * 0.012;
-      currentWeights.materialWeights.b += winFactor * 0.015;
-      currentWeights.materialWeights.r += winFactor * 0.008;
-      currentWeights.materialWeights.q += winFactor * 0.01;
+      if (!currentWeights.materialWeights) {
+        currentWeights.materialWeights = { p: 0, n: 0, b: 0, r: 0, q: 0 };
+      }
+      currentWeights.materialWeights.p = (currentWeights.materialWeights.p || 0) + winFactor * 0.01;
+      currentWeights.materialWeights.n = (currentWeights.materialWeights.n || 0) + winFactor * 0.012;
+      currentWeights.materialWeights.b = (currentWeights.materialWeights.b || 0) + winFactor * 0.015;
+      currentWeights.materialWeights.r = (currentWeights.materialWeights.r || 0) + winFactor * 0.008;
+      currentWeights.materialWeights.q = (currentWeights.materialWeights.q || 0) + winFactor * 0.01;
 
-      currentWeights.pstMultiplier += winFactor * 0.02;
-      currentWeights.mobilityMultiplier += winFactor * 0.01;
-      currentWeights.neuralMultiplier += 0.05; // Continual progress
-      currentWeights.eloOffset += 12; // ELO rises!
+      currentWeights.pstMultiplier = (currentWeights.pstMultiplier || 1.0) + winFactor * 0.02;
+      currentWeights.mobilityMultiplier = (currentWeights.mobilityMultiplier || 1.0) + winFactor * 0.01;
+      currentWeights.neuralMultiplier = (currentWeights.neuralMultiplier || 1.0) + 0.05; // Continual progress
+      currentWeights.eloOffset = (currentWeights.eloOffset || 0) + 15; // ELO rises!
+
+      // Blend style weights from selected training profile
+      const profileStyles = {
+        asmfish: { aggression: 0.8, positional: 0.4, mobility: 0.7, kingSafety: 0.6 },
+        bootchess: { aggression: 0.5, positional: 0.2, mobility: 0.3, kingSafety: 0.3 },
+        critter: { aggression: 0.85, positional: 0.3, mobility: 0.6, kingSafety: 0.4 },
+        caissa: { aggression: 0.3, positional: 0.9, mobility: 0.4, kingSafety: 0.7 },
+        etherreal: { aggression: 0.5, positional: 0.7, mobility: 0.5, kingSafety: 0.6 },
+        fatfriz2: { aggression: 0.9, positional: 0.2, mobility: 0.7, kingSafety: 0.3 },
+        igel: { aggression: 0.5, positional: 0.6, mobility: 0.5, kingSafety: 0.6 },
+        houdini: { aggression: 0.95, positional: 0.2, mobility: 0.8, kingSafety: 0.3 },
+        koivisto: { aggression: 0.6, positional: 0.8, mobility: 0.6, kingSafety: 0.5 },
+        minic: { aggression: 0.4, positional: 0.7, mobility: 0.4, kingSafety: 0.6 },
+        rubichess: { aggression: 0.3, positional: 0.8, mobility: 0.4, kingSafety: 0.8 },
+        seer: { aggression: 0.5, positional: 0.7, mobility: 0.5, kingSafety: 0.5 },
+        slowchess: { aggression: 0.2, positional: 0.9, mobility: 0.3, kingSafety: 0.7 },
+        xiphos: { aggression: 0.85, positional: 0.3, mobility: 0.7, kingSafety: 0.4 },
+        sugar: { aggression: 0.7, positional: 0.5, mobility: 0.6, kingSafety: 0.5 },
+      }[mimicTarget as keyof typeof TRAINING_PROFILES] || { aggression: 0.5, positional: 0.5, mobility: 0.5, kingSafety: 0.5 };
+
+      if (!currentWeights.styleWeights) {
+        currentWeights.styleWeights = { aggression: 0.5, positional: 0.5, mobility: 0.5, kingSafety: 0.5 };
+      }
+
+      // Smooth interpolation/absorption of style weights
+      currentWeights.styleWeights.aggression = 0.8 * currentWeights.styleWeights.aggression + 0.2 * profileStyles.aggression;
+      currentWeights.styleWeights.positional = 0.8 * currentWeights.styleWeights.positional + 0.2 * profileStyles.positional;
+      currentWeights.styleWeights.mobility = 0.8 * currentWeights.styleWeights.mobility + 0.2 * profileStyles.mobility;
+      currentWeights.styleWeights.kingSafety = 0.8 * currentWeights.styleWeights.kingSafety + 0.2 * profileStyles.kingSafety;
 
       localStorage.setItem('AETHERIS_TRAINED_WEIGHTS', JSON.stringify(currentWeights));
-      setTrainingLogs(prev => [...prev, `[Success] Model fine-tuned! Cache updated in AETHERIS_TRAINED_WEIGHTS.`, `[Status] Active Local Engine rating: ${2315 + currentWeights.eloOffset} ELO.`]);
+      setTrainingLogs(prev => [
+        ...prev, 
+        `[Success] Style characteristics of ${mimicTarget.toUpperCase()} successfully integrated!`,
+        `[Success] Model fine-tuned! Cache updated in AETHERIS_TRAINED_WEIGHTS.`, 
+        `[Status] Active Local Engine rating: ${2315 + currentWeights.eloOffset} ELO.`
+      ]);
       setSavedTraining(true);
     } catch (e) {
       console.error('Error saving trained weights:', e);
@@ -883,6 +937,36 @@ export const GlobalArena: React.FC = () => {
               >
                 <X className="w-5 h-5" />
               </button>
+            </div>
+
+            {/* Style Mimicry Target Selection */}
+            <div className="py-3 border-b border-slate-800/60 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Target className="w-4 h-4 text-emerald-400" />
+                <span className="text-xs font-bold text-slate-300">Style Mimicry Target (風格模仿對象)</span>
+              </div>
+              <select
+                value={mimicTarget}
+                onChange={(e) => setMimicTarget(e.target.value)}
+                disabled={trainingProgress > 0 && trainingProgress < 100}
+                className="bg-slate-950 border border-slate-800 text-xs text-white rounded-xl px-3 py-1.5 focus:outline-none focus:border-emerald-500 font-medium cursor-pointer w-full sm:w-auto"
+              >
+                <option value="asmfish">ASMFish (Aggressive / Solid)</option>
+                <option value="bootchess">BootChess (Ultra Lightweight / Balanced)</option>
+                <option value="critter">Critter (Sharp / Attack-heavy)</option>
+                <option value="caissa">Caissa (Deep Positional / Endgame master)</option>
+                <option value="etherreal">Etherreal (Strategic / Fluid)</option>
+                <option value="fatfriz2">FatFriz2 (Tactical / Dynamic)</option>
+                <option value="igel">Igel (Tenacious Defender / Active counterplay)</option>
+                <option value="houdini">Houdini (Highly Offensive / Complex lines)</option>
+                <option value="koivisto">Koivisto (Structural / Piece coordination)</option>
+                <option value="minic">Minic (Cautious / Prophylactic)</option>
+                <option value="rubichess">Rubichess (Solid / Piece-cooperation)</option>
+                <option value="seer">Seer (Uncompromising / Tactical builder)</option>
+                <option value="slowchess">Slowchess (Patience-driven / Endgame squeezer)</option>
+                <option value="xiphos">Xiphos (Dynamic / Pawn-storm enthusiast)</option>
+                <option value="sugar">Sugar (Balanced Positional / Initiative-driven)</option>
+              </select>
             </div>
 
             {/* Progress indicator */}
