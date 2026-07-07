@@ -309,27 +309,40 @@ setInterval(() => {
     try {
       const searchRes = engineInstance.search(liveGameChess.fen(), trainingProgress);
       if (searchRes.bestMove) {
-        const sanMove = searchRes.bestMove.san;
-        liveGameMoves.push(sanMove);
-        liveGameEvals.push(searchRes.score);
+        const sanMove = typeof searchRes.bestMove === 'string' ? searchRes.bestMove : searchRes.bestMove.san;
+        if (sanMove) {
+          liveGameMoves.push(sanMove);
+          liveGameEvals.push(searchRes.score);
 
-        // Decay all heatmap coordinates slightly, then spike target squares
-        for (const sq in heatmapFocus) {
-          heatmapFocus[sq] = Math.max(10, Math.round(heatmapFocus[sq] * 0.95));
-        }
-        if (searchRes.bestMove.from) {
-          heatmapFocus[searchRes.bestMove.from] = Math.min(100, (heatmapFocus[searchRes.bestMove.from] || 10) + 45);
-        }
-        if (searchRes.bestMove.to) {
-          heatmapFocus[searchRes.bestMove.to] = Math.min(100, (heatmapFocus[searchRes.bestMove.to] || 10) + 50);
-        }
+          // Decay all heatmap coordinates slightly, then spike target squares
+          for (const sq in heatmapFocus) {
+            heatmapFocus[sq] = Math.max(10, Math.round(heatmapFocus[sq] * 0.95));
+          }
 
-        liveGameChess.move(searchRes.bestMove);
+          const moveResult = liveGameChess.move(sanMove);
+          if (moveResult) {
+            if (moveResult.from) {
+              heatmapFocus[moveResult.from] = Math.min(100, (heatmapFocus[moveResult.from] || 10) + 45);
+            }
+            if (moveResult.to) {
+              heatmapFocus[moveResult.to] = Math.min(100, (heatmapFocus[moveResult.to] || 10) + 50);
+            }
+          }
 
-        // Periodically log searches
-        if (Math.random() < 0.65) {
-          const evalScoreStr = (searchRes.score / 100).toFixed(2);
-          addTrainingLog(`Engine calculated move: ${sanMove} | Eval: ${evalScoreStr > '0' ? '+' : ''}${evalScoreStr}cp | Depth: ${searchRes.depth} plys | Nodes: ${searchRes.nodes}`, 'info', activeEngineName);
+          // Periodically log searches
+          if (Math.random() < 0.65) {
+            const evalScoreStr = (searchRes.score / 100).toFixed(2);
+            addTrainingLog(`Engine calculated move: ${sanMove} | Eval: ${evalScoreStr > '0' ? '+' : ''}${evalScoreStr}cp | Depth: ${searchRes.depth} plys | Nodes: ${searchRes.nodes}`, 'info', activeEngineName);
+          }
+        } else {
+          // Fallback random move
+          const moves = liveGameChess.moves({ verbose: true });
+          if (moves.length > 0) {
+            const m = moves[Math.floor(Math.random() * moves.length)];
+            liveGameMoves.push(m.san);
+            liveGameEvals.push(0);
+            liveGameChess.move(m.san);
+          }
         }
       } else {
         // Fallback random move
@@ -338,18 +351,22 @@ setInterval(() => {
           const m = moves[Math.floor(Math.random() * moves.length)];
           liveGameMoves.push(m.san);
           liveGameEvals.push(0);
-          liveGameChess.move(m);
+          liveGameChess.move(m.san);
         }
       }
     } catch (e) {
       console.error('Error making background selfplay move:', e);
       // Fallback
-      const moves = liveGameChess.moves();
-      if (moves.length > 0) {
-        const m = moves[Math.floor(Math.random() * moves.length)];
-        liveGameMoves.push(m);
-        liveGameEvals.push(0);
-        liveGameChess.move(m);
+      try {
+        const moves = liveGameChess.moves({ verbose: true });
+        if (moves.length > 0) {
+          const m = moves[Math.floor(Math.random() * moves.length)];
+          liveGameMoves.push(m.san);
+          liveGameEvals.push(0);
+          liveGameChess.move(m.san);
+        }
+      } catch (innerError) {
+        console.error('Failed fallback move in background selfplay:', innerError);
       }
     }
   }
