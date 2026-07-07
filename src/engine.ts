@@ -9,6 +9,7 @@ import { convertToBitboards, popCount, FILE_MASKS, RANK_MASKS, CENTER_CORE_MASK,
 import { findBookMove } from './openingBook';
 import { db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment, setDoc } from 'firebase/firestore';
+import { saveExperience } from './lib/rlExperience';
 
 // Standard material values
 const BASE_VALUES = {
@@ -308,8 +309,8 @@ export class ChessEngine {
       while (temp > 0n) {
         const lsb = temp & -temp;
         const idx = lsb.toString(2).length - 1;
-        const file = idx % 8;
-        const rank = Math.floor(idx / 8);
+        const file = idx & 7;
+        const rank = idx >> 3;
         
         const rIdx = sign === 1 ? 7 - rank : rank;
         const cIdx = sign === 1 ? file : 7 - file;
@@ -1018,31 +1019,61 @@ export class ChessEngine {
     this.timeLimitExceeded = false;
     const chess = new Chess(fen);
 
+    // Opening Book Integration
+    const history = moveHistory || [];
+    const bookMove = findBookMove(history);
+    if (bookMove) {
+      return {
+        bestMove: bookMove.nextBookMove,
+        score: 0,
+        depth: 0,
+        nodes: 0,
+        nps: 0,
+        pv: [bookMove.nextBookMove],
+        bookOpeningName: bookMove.name
+      };
+    }
+
+    // Deep Tactical Extensions
+    if (chess.inCheck() || chess.history().length > 10) {
+      this.config.maxDepth = (this.config.maxDepth || 2) + 1;
+    }
+
+    let result;
     // Check for Leeza MCTS Mode (Phase A & Leeza Chess Zero)
     if (this.config.evalMode === 'leeza_mcts') {
-      return this.searchLEEZAMCTS(chess, trainingProgress);
+      result = this.searchLEEZAMCTS(chess, trainingProgress);
+    } else if (this.config.evalMode === 'stockfish_nnue') {
+      result = this.searchStockfishNNUE(chess, trainingProgress);
+    } else if (this.config.evalMode === 'komodo_mcts') {
+      result = this.searchKomodoDragonMCTS(chess, trainingProgress);
+    } else if (this.config.evalMode === 'patricia_neural') {
+      result = this.searchPatriciaNeural(chess, trainingProgress);
+    } else if (this.config.evalMode === 'nova_chess') {
+      result = this.searchNovaChess(chess, trainingProgress);
+    } else if (this.config.evalMode === 'lc0_neural') {
+      result = this.searchLc0Neural(chess, trainingProgress);
+    } else if (this.config.evalMode === 'torch_hybrid') {
+      result = this.searchTorchHybrid(chess, trainingProgress);
+    } else if (this.config.evalMode === 'pantheon_fusion') {
+      result = this.searchPantheonFusion(chess, trainingProgress);
+    } else if (this.config.evalMode === 'neuralcore_rl_selfplay') {
+      result = this.searchNeuralCoreRLSelfPlay(chess, trainingProgress);
+    } else {
+      // Default to searchDeepThemed
+      result = this.searchDeepThemed(
+        chess,
+        trainingProgress,
+        this.config.maxDepth || 3,
+        100000,
+        50000,
+        this.evaluate.bind(this),
+        'default'
+      );
     }
-    if (this.config.evalMode === 'stockfish_nnue') {
-      return this.searchStockfishNNUE(chess, trainingProgress);
-    }
-    if (this.config.evalMode === 'komodo_mcts') {
-      return this.searchKomodoDragonMCTS(chess, trainingProgress);
-    }
-    if (this.config.evalMode === 'patricia_neural') {
-      return this.searchPatriciaNeural(chess, trainingProgress);
-    }
-    if (this.config.evalMode === 'nova_chess') {
-      return this.searchNovaChess(chess, trainingProgress);
-    }
-    if (this.config.evalMode === 'lc0_neural') {
-      return this.searchLc0Neural(chess, trainingProgress);
-    }
-    if (this.config.evalMode === 'torch_hybrid') {
-      return this.searchTorchHybrid(chess, trainingProgress);
-    }
-    if (this.config.evalMode === 'pantheon_fusion') {
-      return this.searchPantheonFusion(chess, trainingProgress);
-    }
+
+    saveExperience({ fen, bestMove: result.bestMove, score: result.score });
+    return result;
     if (this.config.evalMode === 'neuralcore_rl_selfplay') {
       return this.searchNeuralCoreRLSelfPlay(chess, trainingProgress);
     }
