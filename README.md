@@ -22,4 +22,6 @@ Let's see if this can actually beat Stockfish one day. Even though it's almost i
 
 Please start this repo and follow my account. View my profile and try more repos. 
 
-Have a nice day！ 
+#### Have a nice day! 
+
+I bet you'll like this repo!
