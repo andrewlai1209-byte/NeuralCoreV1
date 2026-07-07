@@ -1072,11 +1072,8 @@ export class ChessEngine {
       );
     }
 
-    saveExperience({ fen, bestMove: result.bestMove, score: result.score });
+    saveExperience({ fen, bestMove: result.bestMove ? (result.bestMove.san || result.bestMove.toString()) : 'none', score: result.score });
     return result;
-    if (this.config.evalMode === 'neuralcore_rl_selfplay') {
-      return this.searchNeuralCoreRLSelfPlay(chess, trainingProgress);
-    }
 
     // Opening book check
     if (moveHistory && moveHistory.length > 0) {
