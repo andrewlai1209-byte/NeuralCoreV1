@@ -311,15 +311,19 @@ export const GlobalArena: React.FC = () => {
 
     // Use our custom backend minimax engine under the hood to calculate opponent move!
     // This maintains excellent chess competence matching the opponent ELO E.g. Depth 3
-    const opponentEngine = new ChessEngine({
-      maxDepth: opponent && opponent.rating > 1900 ? 3 : 2,
-      personality: opponent?.personality === 'trashtalker' ? 'tactical' : 'positional',
-      evalMode: 'hybrid'
+    const searchWorker = new Worker(new URL('../workers/search.worker.ts', import.meta.url));
+    searchWorker.postMessage({
+      fen: activeChess.fen(),
+      config: {
+        maxDepth: opponent && opponent.rating > 1900 ? 3 : 2,
+        personality: opponent?.personality === 'trashtalker' ? 'tactical' : 'positional',
+        evalMode: 'hybrid'
+      },
+      trainingProgress: 0.75
     });
 
-    try {
-      const result = opponentEngine.search(activeChess.fen(), 0.75, activeChess.history());
-      
+    searchWorker.onmessage = (e) => {
+      const result = e.data;
       if (result.bestMove) {
         const copy = new Chess(activeChess.fen());
         const moveDetails = copy.move(result.bestMove);
@@ -342,8 +346,12 @@ export const GlobalArena: React.FC = () => {
           checkGameStatus(copy);
         }
       }
-    } catch (e) {
+      searchWorker.terminate();
+    };
+
+    searchWorker.onerror = (e) => {
       console.error('Error in opponent calculations:', e);
+      searchWorker.terminate();
       // Fallback
       const moves = activeChess.moves({ verbose: true });
       if (moves.length > 0) {
@@ -353,7 +361,7 @@ export const GlobalArena: React.FC = () => {
         setChess(copy);
         setFen(copy.fen());
       }
-    }
+    };
   };
 
   const triggerOpponentReaction = (game: Chess, lastMove: any) => {

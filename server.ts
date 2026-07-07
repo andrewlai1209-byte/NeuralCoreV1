@@ -363,6 +363,19 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', serverTime: new Date().toISOString() });
 });
 
+// Syzygy Endgame Tablebase Lookup
+app.get("/api/syzygy", async (req, res) => {
+  const { fen } = req.query;
+  if (!fen) return res.status(400).json({ error: "Missing FEN" });
+  
+  // Placeholder for real Syzygy integration
+  // In production, this would call a C++ Syzygy library binding or a remote service
+  res.json({ 
+    tablebase_score: "unknown", 
+    message: "Syzygy integration requires local endgame database files (dtz/wdl)." 
+  });
+});
+
 /**
  * POST endpoint to perform real-time Chess Engine move search via API
  */
