@@ -65,7 +65,7 @@ export class ChessEngineSearch {
     };
   }
 
-  private alphaBeta(chess: Chess, depth: number, alpha: number, beta: number, isMaximizing: boolean, evalFunc: (c: Chess) => number): { score: number, move: string | null } {
+  private alphaBeta(chess: Chess, depth: number, alpha: number, beta: number, isMaximizing: boolean, evalFunc: (c: Chess) => number, allowNull: boolean = true): { score: number, move: string | null } {
     this.nodes++;
     
     // Check TT
@@ -77,9 +77,26 @@ export class ChessEngineSearch {
       if (ttEntry.flag === 'BETA' && ttEntry.score >= beta) return { score: beta, move: ttEntry.bestMove };
     }
 
-    if (depth === 0 || chess.isGameOver()) {
+    if (depth <= 0 || chess.isGameOver()) {
       const score = this.quiesce(chess, alpha, beta, isMaximizing, evalFunc);
       return { score, move: null };
+    }
+
+    // Null Move Pruning
+    if (allowNull && depth >= 3 && !chess.inCheck()) {
+       const fenTokens = fen.split(' ');
+       fenTokens[1] = fenTokens[1] === 'w' ? 'b' : 'w';
+       fenTokens[3] = '-'; // remove en passant
+       const nullMoveFen = fenTokens.join(' ');
+       try {
+           const tempChess = new Chess(nullMoveFen);
+           const R = depth > 6 ? 3 : 2;
+           const ev = this.alphaBeta(tempChess, depth - 1 - R, alpha, beta, !isMaximizing, evalFunc, false).score;
+           if (isMaximizing && ev >= beta) return { score: beta, move: null };
+           if (!isMaximizing && ev <= alpha) return { score: alpha, move: null };
+       } catch (e) {
+           // ignore invalid FEN parsing issues for null move
+       }
     }
 
     const rawMoves = chess.moves({ verbose: true });
@@ -90,13 +107,33 @@ export class ChessEngineSearch {
     const ttMoveStr = ttEntry ? ttEntry.bestMove : null;
     const ttMove = ttMoveStr ? rawMoves.find(m => m.san === ttMoveStr) : null;
     const moves = sortMoves(chess, rawMoves, depth, ttMove, this.killerMoves, this.historyMoves);
+
     let bestMove = moves[0].san;
+    let i = 0;
 
     if (isMaximizing) {
       let maxEval = -Infinity;
       for (const m of moves) {
         chess.move(m.san);
-        const ev = this.alphaBeta(chess, depth - 1, alpha, beta, false, evalFunc).score;
+        
+        let ev: number;
+        // Principal Variation Search (PVS) + Late Move Reductions (LMR)
+        if (i === 0) {
+            ev = this.alphaBeta(chess, depth - 1, alpha, beta, false, evalFunc, true).score;
+        } else {
+            let d = depth - 1;
+            // LMR condition
+            if (depth >= 3 && i >= 4 && !m.captured && (!m.san || !m.san.includes('+'))) {
+                d--;
+            }
+            // Null window search
+            ev = this.alphaBeta(chess, d, alpha, alpha + 1, false, evalFunc, true).score;
+            if (ev > alpha && ev < beta) {
+                // Re-search with full window
+                ev = this.alphaBeta(chess, depth - 1, alpha, beta, false, evalFunc, true).score;
+            }
+        }
+        
         chess.undo();
 
         if (ev > maxEval) {
@@ -105,9 +142,17 @@ export class ChessEngineSearch {
         }
         alpha = Math.max(alpha, ev);
         if (beta <= alpha) {
+          if (!m.captured) {
+            if (!this.killerMoves[depth]) this.killerMoves[depth] = [];
+            this.killerMoves[depth].unshift(m);
+            if (this.killerMoves[depth].length > 2) this.killerMoves[depth].pop();
+            const historyKey = `${m.from}_${m.to}_${m.promotion || ''}`;
+            this.historyMoves[historyKey] = (this.historyMoves[historyKey] || 0) + depth * depth;
+          }
           this.transTable.set(fen, { depth, score: maxEval, flag: 'BETA', bestMove });
           break;
         }
+        i++;
       }
       this.transTable.set(fen, { depth, score: maxEval, flag: 'EXACT', bestMove });
       return { score: maxEval, move: bestMove };
@@ -115,7 +160,22 @@ export class ChessEngineSearch {
       let minEval = Infinity;
       for (const m of moves) {
         chess.move(m.san);
-        const ev = this.alphaBeta(chess, depth - 1, alpha, beta, true, evalFunc).score;
+        
+        let ev: number;
+        // PVS + LMR
+        if (i === 0) {
+            ev = this.alphaBeta(chess, depth - 1, alpha, beta, true, evalFunc, true).score;
+        } else {
+            let d = depth - 1;
+            if (depth >= 3 && i >= 4 && !m.captured && (!m.san || !m.san.includes('+'))) {
+                d--;
+            }
+            ev = this.alphaBeta(chess, d, beta - 1, beta, true, evalFunc, true).score;
+            if (ev > alpha && ev < beta) {
+                ev = this.alphaBeta(chess, depth - 1, alpha, beta, true, evalFunc, true).score;
+            }
+        }
+        
         chess.undo();
 
         if (ev < minEval) {
@@ -124,9 +184,17 @@ export class ChessEngineSearch {
         }
         beta = Math.min(beta, ev);
         if (beta <= alpha) {
+          if (!m.captured) {
+            if (!this.killerMoves[depth]) this.killerMoves[depth] = [];
+            this.killerMoves[depth].unshift(m);
+            if (this.killerMoves[depth].length > 2) this.killerMoves[depth].pop();
+            const historyKey = `${m.from}_${m.to}_${m.promotion || ''}`;
+            this.historyMoves[historyKey] = (this.historyMoves[historyKey] || 0) + depth * depth;
+          }
           this.transTable.set(fen, { depth, score: minEval, flag: 'ALPHA', bestMove });
           break;
         }
+        i++;
       }
       this.transTable.set(fen, { depth, score: minEval, flag: 'EXACT', bestMove });
       return { score: minEval, move: bestMove };
