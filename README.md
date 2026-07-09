@@ -1,12 +1,11 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+
 </div>
 
-# Run and deploy your AI Studio app
+# NeuralCore, a strong and advanced chess engine...
 
-This contains everything you need to run your app locally.
+This chess engine is wipe coded by different AIs. Including Google AI Studio、Claude、ChatGPT、OpenCode etc. 
 
-View your app in AI Studio: https://ai.studio/apps/453c3070-d43c-432e-8cc5-54708ad49c8c
+Let's see if this can actually beat Stockfish one day. Even though it's almost impossible lol. 
 
 ## Run Locally
 
@@ -18,3 +17,11 @@ View your app in AI Studio: https://ai.studio/apps/453c3070-d43c-432e-8cc5-54708
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+### Yep, everyone please try it. 
+
+Please start this repo and follow my account. View my profile and try more repos. 
+
+#### Have a nice day! 
+
+I bet you'll like this repo!
