@@ -406,7 +406,7 @@ app.get("/api/syzygy", async (req, res) => {
 /**
  * POST endpoint to perform real-time Chess Engine move search via API
  */
-app.post('/api/engine/search', (req, res) => {
+app.post('/api/engine/search', async (req, res) => {
   const { fen, depth, personality, evalMode, moveHistory, timeLimitMs, quiescenceLimit, maxCapturesToCheck } = req.body;
   
   const searchFen = fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -425,7 +425,7 @@ app.post('/api/engine/search', (req, res) => {
       maxCapturesToCheck: maxCapturesToCheck ? parseInt(maxCapturesToCheck) : undefined
     });
 
-    const searchResult = searchEngine.search(searchFen, 0.75, history);
+    const searchResult = await searchEngine.search(searchFen, 0.75, history);
 
     res.json({
       success: true,
@@ -724,7 +724,7 @@ app.post('/api/engine/custom/:id', (req, res) => {
       customWeights: customApi.customWeights
     });
 
-    const searchResult = searchEngine.search(searchFen, 0.75, history);
+    const searchResult = await searchEngine.search(searchFen, 0.75, history);
 
     res.json({
       success: true,
